@@ -262,6 +262,68 @@ class DynamoManager:
             )
         except ClientError as e:
             print(f"Error updating order: {e}")
+
+    def update_order_status(self, order_id, new_status, mode="LIVE"):
+        """Update order status (e.g. to 'request_cancel')."""
+        try:
+            table = self.test_orders_table if mode == "TEST" else self.orders_table
+            table.update_item(
+                Key={'order_id': order_id},
+                UpdateExpression='SET #status = :status',
+                ExpressionAttributeNames={'#status': 'status'},
+                ExpressionAttributeValues={':status': new_status}
+            )
+            print(f"[{mode}] Updated order {order_id} status to {new_status}")
+        except ClientError as e:
+            print(f"Error updating order status: {e}")
+
+    def update_position_status(self, position_id, new_status, mode="LIVE"):
+        """Update position status (e.g. to 'request_close')."""
+        try:
+            table = self.test_positions_table if mode == "TEST" else self.positions_table
+            table.update_item(
+                Key={'position_id': position_id},
+                UpdateExpression='SET #status = :status',
+                ExpressionAttributeNames={'#status': 'status'},
+                ExpressionAttributeValues={':status': new_status}
+            )
+            print(f"[{mode}] Updated position {position_id} status to {new_status}")
+        except ClientError as e:
+            print(f"Error updating position status: {e}")
+
+    def update_position_risk(self, position_id, stop_loss, take_profit, mode="LIVE"):
+        """Update SL/TP for a position."""
+        try:
+            table = self.test_positions_table if mode == "TEST" else self.positions_table
+            # Handle potential None values safely? 
+            # DynamoDB doesn't like nulls sometimes, better to remove attribute if None, but here we assume user sends values.
+            # Convert to Decimal
+            sl_val = Decimal(str(stop_loss)) if stop_loss else None
+            tp_val = Decimal(str(take_profit)) if take_profit else None
+            
+            update_expr = 'SET '
+            expr_vals = {}
+            
+            if sl_val is not None:
+                update_expr += 'stop_loss = :sl, '
+                expr_vals[':sl'] = sl_val
+            if tp_val is not None:
+                update_expr += 'take_profit = :tp, '
+                expr_vals[':tp'] = tp_val
+            
+            if not expr_vals:
+                return # Nothing to update
+                
+            update_expr = update_expr.rstrip(', ') # Remove trailing comma
+            
+            table.update_item(
+                Key={'position_id': position_id},
+                UpdateExpression=update_expr,
+                ExpressionAttributeValues=expr_vals
+            )
+            print(f"[{mode}] Updated position {position_id} risk: SL={stop_loss}, TP={take_profit}")
+        except ClientError as e:
+            print(f"Error updating position risk: {e}")
     
     def get_account_pnl(self, mode="LIVE"):
         """Get account-level P&L statistics."""

@@ -31,10 +31,10 @@ render_account_summary(db, "LIVE", config)
 tab1, tab2, tab3 = st.tabs(["📋 Real Positions", "📦 Real Orders", "📈 All Signals"])
 
 with tab1:
-    render_positions_table(db.positions_table)
+    render_positions_table(db, "LIVE")
 
 with tab2:
-    render_orders_table(db.orders_table)
+    render_orders_table(db, "LIVE")
 
 with tab3:
     render_signals_table(db.signals_table)

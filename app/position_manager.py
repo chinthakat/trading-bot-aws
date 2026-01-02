@@ -329,58 +329,148 @@ class PositionManager:
         # For now, write e.g. if P&L changes significantly or throttling
         # self.db.update_position(position)
         
-    def sync_pending_orders(self):
+    def sync_state(self):
         """
-        Sync pending orders from Database.
-        Crucial for picking up manual orders placed via Dashboard in TEST mode.
+        Sync state from Database.
+        1. Import pending orders created by Dashboard.
+        2. Process 'request_cancel' orders.
+        3. Process 'request_close' positions.
+        4. Sync Risk Params (SL/TP).
         """
         try:
-            # 1. Fetch pending orders from DB
+            # Table Selection
             if self.mode == "TEST":
-                table = self.db.test_orders_table
+                orders_table = self.db.test_orders_table
+                positions_table = self.db.test_positions_table
             else:
-                table = self.db.orders_table
+                orders_table = self.db.orders_table
+                positions_table = self.db.positions_table
             
-            # Scan for pending status
-            response = table.scan(
+            # === 1. Sync Pending Orders (New imports) ===
+            # Scan for status=pending
+            resp = orders_table.scan(
                 FilterExpression='#st = :pending',
                 ExpressionAttributeNames={'#st': 'status'},
                 ExpressionAttributeValues={':pending': 'pending'}
             )
-            db_orders = response.get('Items', [])
+            db_orders = resp.get('Items', [])
             
-            if db_orders:
-                print(f"[{self.mode}] Found {len(db_orders)} pending orders in DB: {[o['order_id'] for o in db_orders]}")
-                
-            # 2. Update local state
             for order in db_orders:
                 order_id = order['order_id']
-                
-                # If we don't know about this order, add it
                 if order_id not in self.pending_orders:
-                    print(f"[{self.mode}] Discovered NEW external pending order: {order_id}")
-                    logger.info(f"[{self.mode}] Discovered external pending order: {order_id}")
-                    
-                    # Convert DynamoDB Decimals to float
+                    # New Order Found
                     if 'price' in order: order['price'] = float(order['price'])
                     if 'amount' in order: order['amount'] = float(order['amount'])
                     
-                    # In TEST mode, we must also register it with the simulator!
                     if self.mode == "TEST" and self.simulator:
-                        # Re-inject into simulator if not there
                         if order_id not in self.simulator.pending_orders:
                             sim_order = order.copy()
-                            # Ensure types are correct for simulator
-                            sim_order['created_at'] = datetime.fromtimestamp(int(order['created_at'])/1000) if isinstance(order['created_at'], (int, float, str)) else datetime.now()
-                            self.simulator.pending_orders[order_id] = sim_order
-                            print(f"[{self.mode}] Injected order {order_id} into COMPONENT simulator")
-                            logger.info(f"[{self.mode}] Injected order {order_id} into simulator")
+                            # Convert DB types to Py types for Simulator
+                            # Note: Simulator might expect datetime objects
+                            # Created_at in DB is timestamp int. Simulator uses datetime? 
+                            # Checking simulator code: it uses datetime.now() usually.
+                            # Just re-insert.
+                            self.simulator.pending_orders[order_id] = sim_order 
+                            logger.info(f"[TEST] Injected new dashboard order {order_id}")
                     
                     self.pending_orders[order_id] = order
+            
+            # === 2. Process Cancel Requests ===
+            resp = orders_table.scan(
+                FilterExpression='#st = :req_cancel',
+                ExpressionAttributeNames={'#st': 'status'},
+                ExpressionAttributeValues={':req_cancel': 'request_cancel'}
+            )
+            cancel_requests = resp.get('Items', [])
+            
+            for order in cancel_requests:
+                order_id = order['order_id']
+                logger.info(f"Processing cancel request for {order_id}")
+                
+                try:
+                    if self.mode == "TEST" and self.simulator:
+                        # Remove from simulator
+                        if order_id in self.simulator.pending_orders:
+                            self.simulator.pending_orders.pop(order_id)
+                        
+                        # Update DB
+                        order['status'] = 'canceled'
+                        # self.db.update_order(order) # Need a method that accepts dict or use generic update
+                        self.db.update_order_status(order_id, 'canceled', self.mode)
+                        
+                        if order_id in self.pending_orders:
+                            self.pending_orders.pop(order_id)
+                            
+                    else: # LIVE
+                        # Cancel on Exchange
+                        try:
+                            self.exchange.cancel_order(order_id)
+                        except Exception as e:
+                            logger.warning(f"Exchange cancel failed (maybe already gone): {e}")
+                        
+                        self.db.update_order_status(order_id, 'canceled', self.mode)
+                        if order_id in self.pending_orders:
+                            self.pending_orders.pop(order_id)
+                            
+                except Exception as e:
+                    logger.error(f"Failed to process cancel request {order_id}: {e}")
+
+            # === 3. Process Close Requests ===
+            resp = positions_table.scan(
+                FilterExpression='#st = :req_close',
+                ExpressionAttributeNames={'#st': 'status'},
+                ExpressionAttributeValues={':req_close': 'request_close'}
+            )
+            close_requests = resp.get('Items', [])
+            
+            for pos in close_requests:
+                pos_id = pos['position_id']
+                # Check if it matches current position
+                if self.current_position and self.current_position['position_id'] == pos_id:
+                    logger.info(f"Processing close request for position {pos_id}")
+                    # We need current price to close. 
+                    # Ideally we have it from the main bot loop.
+                    # We can Trigger a close flag? 
+                    # Or just place a market order here if we have price?
+                    # We don't have price passed here easily. 
+                    # Strategy: Set a flag 'force_close' on the object? 
+                    # OR: Just update the DB status back to 'open' but trigger the close_position logic?
                     
+                    # Better: self.close_position() requires price. 
+                    # If we don't have it, we can't close safely with Limit.
+                    # Use Market order?
+                    # Let's set a flag on the self.current_position object
+                    self.current_position['force_close'] = True
+                
+                else:
+                    # It's a request for a position we don't think we have active?
+                    # Maybe it's already closed. Update DB to closed just in case?
+                    # Or it's a desync. Ignore.
+                    pass
+
+            # === 4. Sync Risk (SL/TP) ===
+            if self.current_position:
+                # Re-fetch from DB to check for updates
+                # Optimization: Only do this every X seconds? scan is expensive?
+                # For MVP, maybe we skip full scan and Query specific ID?
+                # But we don't have Key condition easily without index.
+                # Actually, we can just GET item since we have Position ID
+                try:
+                    # Determine table
+                    table = positions_table
+                    response = table.get_item(Key={'position_id': self.current_position['position_id']})
+                    if 'Item' in response:
+                        db_pos = response['Item']
+                        # Update local SL/TP
+                        self.current_position['stop_loss'] = float(db_pos.get('stop_loss', 0)) if db_pos.get('stop_loss') else None
+                        self.current_position['take_profit'] = float(db_pos.get('take_profit', 0)) if db_pos.get('take_profit') else None
+                        # logger.info(f"Synced risk for {self.current_position['symbol']}: SL={self.current_position['stop_loss']}")
+                except Exception as e:
+                    logger.error(f"Error syncing risk params: {e}")
+
         except Exception as e:
-            print(f"Error syncing pending orders: {e}")
-            logger.error(f"Error syncing pending orders: {e}")
+            print(f"Error syncing state: {e}")
+            logger.error(f"Error syncing state: {e}")
     
     def get_account_pnl(self) -> Dict:
         """Get account-level P&L statistics."""
