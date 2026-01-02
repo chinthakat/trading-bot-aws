@@ -314,20 +314,67 @@ class PositionManager:
         
         if self.current_position['symbol'] != symbol:
             return
+            
+        position = self.current_position
+        if position['side'] == 'long':
+            pnl = (current_price - position['entry_price']) * position['quantity']
+        else:
+            pnl = (position['entry_price'] - current_price) * position['quantity']
+            
+        position['pnl'] = pnl
+        position['current_price'] = current_price
         
-        pos = self.current_position
+        # Update in DB (optimize to not write every 2s?)
+        # For now, write e.g. if P&L changes significantly or throttling
+        # self.db.update_position(position)
         
-        # Calculate unrealized P&L
-        if pos['side'] == 'long':
-            pnl = (current_price - pos['entry_price']) * pos['quantity']
-        else:  # short
-            pnl = (pos['entry_price'] - current_price) * pos['quantity']
-        
-        pos['pnl'] = pnl
-        pos['current_price'] = current_price
-        
-        # Update in database
-        self.db.update_position_pnl(pos['position_id'], pnl, current_price)
+    def sync_pending_orders(self):
+        """
+        Sync pending orders from Database.
+        Crucial for picking up manual orders placed via Dashboard in TEST mode.
+        """
+        try:
+            # 1. Fetch pending orders from DB
+            if self.mode == "TEST":
+                table = self.db.test_orders_table
+            else:
+                table = self.db.orders_table
+            
+            # Scan for pending status (Inefficient for large tables, but fine for now)
+            # Better: Query by GSI if available
+            response = table.scan(
+                FilterExpression='#st = :pending',
+                ExpressionAttributeNames={'#st': 'status'},
+                ExpressionAttributeValues={':pending': 'pending'}
+            )
+            db_orders = response.get('Items', [])
+            
+            # 2. Update local state
+            for order in db_orders:
+                order_id = order['order_id']
+                
+                # If we don't know about this order, add it
+                if order_id not in self.pending_orders:
+                    logger.info(f"[{self.mode}] Discovered external pending order: {order_id}")
+                    
+                    # Convert DynamoDB Decimals to float
+                    if 'price' in order: order['price'] = float(order['price'])
+                    if 'amount' in order: order['amount'] = float(order['amount'])
+                    
+                    # In TEST mode, we must also register it with the simulator!
+                    if self.mode == "TEST" and self.simulator:
+                        # Re-inject into simulator if not there
+                        if order_id not in self.simulator.pending_orders:
+                            sim_order = order.copy()
+                            # Ensure types are correct for simulator
+                            sim_order['created_at'] = datetime.fromtimestamp(int(order['created_at'])/1000) if isinstance(order['created_at'], (int, float, str)) else datetime.now()
+                            self.simulator.pending_orders[order_id] = sim_order
+                            logger.info(f"[{self.mode}] Injected order {order_id} into simulator")
+                    
+                    self.pending_orders[order_id] = order
+                    
+        except Exception as e:
+            logger.error(f"Error syncing pending orders: {e}")
     
     def get_account_pnl(self) -> Dict:
         """Get account-level P&L statistics."""
