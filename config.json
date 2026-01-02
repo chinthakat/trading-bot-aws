@@ -8,7 +8,10 @@
             "prices": "TradingBot_Prices",
             "signals": "TradingBot_Signals",
             "positions": "TradingBot_Positions",
-            "orders": "TradingBot_Orders"
+            "orders": "TradingBot_Orders",
+            "test_positions": "TradingBot_Test_Positions",
+            "test_orders": "TradingBot_Test_Orders",
+            "test_account": "TradingBot_Test_Account"
         }
     },
     "exchange": {
@@ -20,6 +23,8 @@
         }
     },
     "trading": {
+        "mode": "TEST",
+        "test_initial_balance": 10000.0,
         "symbols": [
             "BTC/USDT"
         ],
