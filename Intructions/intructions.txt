@@ -1,0 +1,170 @@
+Document Title: Technical Requirements for Modular Crypto Day Trading Bot on AWS
+Version: 1.0
+Date: January 02, 2026
+Prepared For: Technical Business Analyst (BA)
+Purpose: This document outlines the detailed technical requirements for developing a cost-effective, scalable day trading bot using AWS services and Binance API. It focuses on initial simplicity (MA-based strategy) with extensibility for additional algorithms, dashboard interactions, and external signals. Requirements are derived from stakeholder discussions emphasizing cheap runtime, speed, flexibility, and modularity.
+Scope: Covers system architecture, functional/non-functional requirements, data models, integrations, security, and deployment. Minimal code examples are provided for clarity; full implementation details are for development phase.
+Assumptions:
+AWS Free Tier eligibility for initial setup.
+Binance Testnet used for development; mainnet for production.
+Users are familiar with Python, AWS Console/CLI, and basic trading concepts.
+
+Out of Scope: High-frequency trading (HFT) optimizations, advanced ML strategies, mobile apps, or non-AWS integrations.
+
+1. System Overview
+The system is a cloud-based day trading bot for cryptocurrencies on Binance, hosted on AWS EC2 with in-memory data handling for real-time performance. It starts with a simple Moving Average (MA) crossover strategy and supports modular addition of algorithms (e.g., RSI, MACD). Data persistence uses DynamoDB for trades, stats, and historical prices. A web-based dashboard (Streamlit) allows viewing trades/P&L, configuring parameters, and enabling/disabling algos/symbols. Future expansions include graphs and external signal integration via DynamoDB.
+Key Components
+
+Core Bot: Python script on EC2 for data ingestion, strategy execution, and trading.
+Storage: In-memory (Python deques) for recent data; DynamoDB for persistent records.
+Dashboard: Streamlit app on EC2 for UI interactions.
+Integrations: Binance API for market data/trades; AWS services for hosting/storage.
+
+High-Level Architecture
+
+EC2 (t3.micro): Hosts bot script and dashboard.
+DynamoDB: Serverless NoSQL for trades, stats, prices, and signals.
+Networking: VPC with security groups for isolation.
+Monitoring: CloudWatch for logs/metrics.
+
+2. Functional Requirements
+2.1 Core Bot Functionality
+
+FR1.1: Data Ingestion
+Fetch real-time ticker data from Binance API (e.g., via ccxt library) for configured symbols (initially BTC/USDT).
+Use polling (every 5s) or WebSockets for low-latency updates.
+Store recent prices in-memory (deque with maxlen=3600/interval, e.g., 1hr buffer at 15s samples).
+
+FR1.2: Strategy Execution
+Initially implement one strategy: MA Crossover (short SMA > long SMA = buy; < = sell).
+Use modular class-based design (e.g., BaseStrategy subclass) with a registry for easy addition of new algos.
+Run checks periodically (every 30s via config).
+Execute market orders on signals (buy/sell fixed amount, e.g., 0.001 BTC).
+Tag trades with algo name for tracking.
+
+FR1.3: Modularity and Configuration
+Load configs from JSON file (symbols, algos enabled/disabled, params per algo).
+Support adding new algos by extending strategies.py and updating registry/config without core code changes.
+Example config structure:JSON{
+  "symbols": ["BTC/USDT"],
+  "algos": {"MA_Crossover": true},
+  "params": {"MA_Crossover": {"short_period": 50, "long_period": 200}}
+}
+
+FR1.4: Data Persistence
+Store historical prices to DynamoDB every 15/30s (OHLCV if expanded).
+Log trades (id, timestamp, symbol, action, amount, price, pnl, algo).
+Update stats (pnl per algo/total, win/loss ratios) asynchronously via threads.
+
+FR1.5: External Signals
+Poll DynamoDB "Signals" table if enabled in config.
+Process external buy/sell signals (inserted by other systems) and execute trades, tagging as "External".
+
+
+2.2 Dashboard Functionality
+
+FR2.1: Viewing Data
+Display trades table (from DynamoDB scan/query).
+Show total P&L and per-algo P&L (aggregate from stats table).
+Initial graph: Price line chart for selected symbol (using Altair or similar).
+
+FR2.2: Configuration
+Multiselect for symbols.
+Checkboxes to enable/disable algos (dynamic from registry).
+Sliders/inputs for params (per algo).
+Checkbox for external signals.
+Save button to update config.json and prompt bot restart.
+
+FR2.3: Expandability
+Placeholders for additional graphs (e.g., P&L curves per algo using st.altair_chart).
+
+
+2.3 Integration Requirements
+
+Binance API: Use ccxt or binance-connector for authentication, rate limiting, and endpoints (fetch_ticker, create_market_order).
+AWS SDK: Boto3 for DynamoDB puts/scans/queries.
+Libraries: ta for indicators, pandas for data handling in dashboard.
+
+3. Non-Functional Requirements
+3.1 Performance
+
+Latency: <5s end-to-end for data fetch to trade execution (suitable for day trading).
+Throughput: Handle 10-20 symbols; 100+ trades/day.
+Scalability: t3.micro sufficient initially; upgrade instance or add ECS for growth.
+
+3.2 Reliability
+
+Error Handling: Retry on API failures (exponential backoff); log exceptions.
+Uptime: 99% via EC2 auto-recovery and screen/systemd for persistence.
+Data Integrity: Use TTL in DynamoDB for old prices; async writes to avoid blocking.
+
+3.3 Security
+
+API Keys: Store in AWS Secrets Manager; fetch at runtime.
+Networking: VPC isolation; security groups limit ports (22 SSH, 8501 dashboard).
+Data: Encrypt DynamoDB at rest; IAM least-privilege roles.
+Compliance: Handle Binance rate limits (1200 req/min); no PII storage.
+
+3.4 Usability
+
+Dashboard: Responsive, intuitive UI; accessible via EC2 public IP.
+Config: JSON-based for easy edits; dashboard overrides for non-tech users.
+
+3.5 Maintainability
+
+Code Structure: Modular (separate strategies, bot logic, dashboard).
+Logging: To file and CloudWatch; levels (INFO/ERROR).
+Testing: Use Binance Testnet; unit tests for strategies.
+
+3.6 Cost
+
+Target: <$10/month initially (EC2 Free Tier, DynamoDB on-demand ~$1-2).
+Optimization: Use spot instances if uptime allows.
+
+4. Data Models
+4.1 DynamoDB Schemas
+
+Trades Table (Provisioned or On-Demand):
+Partition: trade_id (String)
+Sort: timestamp (Number)
+Attributes: symbol (String), action (String), amount (Number), price (Number), pnl (Number), algo (String)
+
+Stats Table:
+Partition: stat_type (String, e.g., "pnl")
+Sort: algo (String, e.g., "MA_Crossover" or "total")
+Attributes: date (String), value (Number)
+
+HistoricalPrices Table:
+Partition: symbol (String)
+Sort: timestamp (Number)
+Attributes: price (Number), expiry (Number for TTL)
+
+Signals Table:
+Partition: signal_id (String)
+Sort: timestamp (Number)
+Attributes: symbol (String), action (String), source (String)
+
+
+5. Deployment and Operations
+
+Deployment Steps:
+Provision EC2 and DynamoDB via Console.
+SSH to EC2, set up venv, install deps.
+Upload/upload code files (bot.py, strategies.py, config.json, dashboard.py).
+Run bot in screen; dashboard via Streamlit command.
+
+CI/CD: Optional GitHub Actions for code pushes.
+Monitoring: CloudWatch alarms for CPU >80%, DynamoDB throttles.
+Backup: S3 for config/logs; DynamoDB point-in-time recovery.
+
+6. Risks and Mitigations
+
+Risk: Market losses – Mitigation: Testnet, risk params (e.g., stop-loss).
+Risk: API downtime – Mitigation: Error retries, alerts.
+Risk: Cost overrun – Mitigation: Free Tier, auto-shutdown scripts.
+Risk: Security breach – Mitigation: MFA, key rotation.
+
+7. Appendix
+
+References: AWS EC2/DynamoDB docs, Binance API specs, ccxt GitHub.
+Next Steps: Review with dev team; prototype on Testnet.
