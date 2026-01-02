@@ -68,9 +68,9 @@ class DynamoManager:
             }
             
             self.signals_table.put_item(Item=item)
-            logger.info(f"Signal logged: {signal_data['signal']} for {signal_data['symbol']}")
+            print(f"Signal logged: {signal_data['signal']} for {signal_data['symbol']}")
         except Exception as e:
-            logger.error(f"Error logging signal: {e}")
+            print(f"Error logging signal: {e}")
 
 
     def log_candle(self, candle_data):
