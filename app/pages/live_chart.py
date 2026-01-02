@@ -37,6 +37,111 @@ except Exception as e:
     st.error(f"Failed to connect to DB: {e}")
     st.stop()
 
+# === Manual Trading Controls ===
+manual_trading_enabled = config['trading'].get('manual_trading_enabled', False)
+mode = config['trading'].get('mode', 'TEST')
+
+if manual_trading_enabled:
+    st.sidebar.divider()
+    st.sidebar.subheader("🎮 Manual Trading")
+    st.sidebar.caption(f"Mode: **{mode}**")
+    
+    col1, col2 = st.sidebar.columns(2)
+    
+    with col1:
+        if st.button("🟢 BUY", use_container_width=True, type="primary"):
+            try:
+                # Import PositionManager
+                sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                from position_manager import PositionManager
+                import ccxt
+                
+                # Get latest price
+                latest_items = db.get_price_history(symbol, limit=1)
+                if latest_items:
+                    current_price = float(latest_items[0]['close'])
+                    
+                    # Initialize exchange and PositionManager
+                    exchange_class = getattr(ccxt, config['exchange']['id'])
+                    exchange = exchange_class({
+                        'apiKey': os.getenv('BINANCE_API_KEY'),
+                        'secret': os.getenv('BINANCE_SECRET'),
+                        'enableRateLimit': True,
+                        'options': config['exchange']['options']
+                    })
+                    
+                    pm = PositionManager(exchange, db, config['trading']['risk_management'], mode)
+                    
+                    # Calculate size and place order
+                    if pm.can_open_position(symbol):
+                        amount = pm.calculate_position_size(symbol, current_price)
+                        if amount:
+                            order = pm.place_limit_order(symbol, 'buy', current_price, amount)
+                            if order:
+                                # Log manual signal
+                                db.log_signal({
+                                    'symbol': symbol,
+                                    'signal': 'BUY',
+                                    'algo': 'MANUAL',
+                                    'price': current_price,
+                                    'timestamp': int(time.time() * 1000)
+                                })
+                                st.sidebar.success(f"✅ BUY order placed @ ${current_price:.2f}")
+                            else:
+                                st.sidebar.error("❌ Order failed")
+                    else:
+                        st.sidebar.warning("⚠️ Cannot open position")
+                else:
+                    st.sidebar.error("No price data")
+            except Exception as e:
+                st.sidebar.error(f"Error: {e}")
+    
+    with col2:
+        if st.button("🔴 SELL", use_container_width=True, type="secondary"):
+            try:
+                sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                from position_manager import PositionManager
+                import ccxt
+                
+                latest_items = db.get_price_history(symbol, limit=1)
+                if latest_items:
+                    current_price = float(latest_items[0]['close'])
+                    
+                    exchange_class = getattr(ccxt, config['exchange']['id'])
+                    exchange = exchange_class({
+                        'apiKey': os.getenv('BINANCE_API_KEY'),
+                        'secret': os.getenv('BINANCE_SECRET'),
+                        'enableRateLimit': True,
+                        'options': config['exchange']['options']
+                    })
+                    
+                    pm = PositionManager(exchange, db, config['trading']['risk_management'], mode)
+                    
+                    if pm.can_open_position(symbol):
+                        amount = pm.calculate_position_size(symbol, current_price)
+                        if amount:
+                            order = pm.place_limit_order(symbol, 'sell', current_price, amount)
+                            if order:
+                                db.log_signal({
+                                    'symbol': symbol,
+                                    'signal': 'SELL',
+                                    'algo': 'MANUAL',
+                                    'price': current_price,
+                                    'timestamp': int(time.time() * 1000)
+                                })
+                                st.sidebar.success(f"✅ SELL order placed @ ${current_price:.2f}")
+                            else:
+                                st.sidebar.error("❌ Order failed")
+                    else:
+                        st.sidebar.warning("⚠️ Cannot open position")
+                else:
+                    st.sidebar.error("No price data")
+            except Exception as e:
+                st.sidebar.error(f"Error: {e}")
+    
+    st.sidebar.caption("⚠️ Orders use exchange minimum quantity")
+
+
 # Helper to fetch data
 @st.cache_data(ttl=3) 
 def fetch_bot_data(symbol, limit):
