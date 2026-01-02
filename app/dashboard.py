@@ -87,6 +87,8 @@ with col1:
             # Convert decimal to float for display
             df_trades['price'] = df_trades['price'].astype(float)
             df_trades['amount'] = df_trades['amount'].astype(float)
+            # Fix: Ensure timestamp is numeric
+            df_trades['timestamp'] = pd.to_numeric(df_trades['timestamp'])
             df_trades['timestamp'] = pd.to_datetime(df_trades['timestamp'], unit='ms')
             
             st.dataframe(df_trades[['timestamp', 'symbol', 'action', 'price', 'amount', 'algo']])
@@ -97,34 +99,63 @@ with col1:
 
 with col2:
     st.subheader("Performance / Stats")
-    # Placeholder for PnL chart
-    # In a real app we would query the 'stats' table
     st.markdown("Total PnL: **$0.00** (Not Implemented yet in data)")
     
-    st.subheader("Live Price (Mock/Latest)")
-    # Since we don't have a persistent stream in the dashboard, we can just show last price from DB if available
-    # or just leave blank for now.
-    st.info("Real-time plotting requires reading from Prices table or Stream.")
+    st.markdown("---")
+    st.subheader("Price Analysis")
     
     if db_connected:
-        # Try to scan prices just to see if we have any
-        try:
-            # Full scan is bad practice in prod, but for MVP/Debug:
-            # Actually persistence.log_price logs to 'prices' table.
-            # Let's just try to get a few.
-            response = db.prices_table.scan(Limit=50)
-            items = response.get('Items', [])
-            if items:
-                df_prices = pd.DataFrame(items)
-                df_prices['price'] = df_prices['price'].astype(float)
-                df_prices['timestamp'] = pd.to_datetime(df_prices['timestamp'], unit='ms')
-                df_prices = df_prices.sort_values('timestamp')
-                
-                st.line_chart(df_prices.set_index('timestamp')['price'])
-            else:
-                st.text("No price data yet.")
-        except Exception as e:
-            st.text(f"Could not load prices: {e}")
+        # Symbol Selector
+        # Ideally fetch unique symbols from DB or config
+        symbols = config['trading']['symbols']
+        selected_symbol = st.selectbox("Select Symbol", symbols)
+        
+        # Date Range / Limit selector
+        limit = st.slider("History Check (datapoints)", 50, 500, 200)
+        
+        if st.button("Load Graph"):
+            with st.spinner("Fetching data..."):
+                try:
+                    prices = db.get_price_history(selected_symbol, limit=limit)
+                    
+                    if prices:
+                        df = pd.DataFrame(prices)
+                        df['price'] = df['price'].astype(float)
+                        # Fix: Ensure timestamp is numeric (handle Decimal/String from DB)
+                        df['timestamp'] = pd.to_numeric(df['timestamp'])
+                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                        df = df.set_index('timestamp')
+                        
+                        # Calculate Indicators on the fly
+                        import ta
+                        
+                        # Moving Averages (matching config if possible, or generic)
+                        # We use the defaults from config for the 'MA_Crossover' strategy
+                        ma_params = config['trading']['active_strategies']['MA_Crossover']['params']
+                        short_window = ma_params['short_period']
+                        long_window = ma_params['long_period']
+                        
+                        df[f'SMA_{short_window}'] = ta.trend.sma_indicator(df['price'], window=short_window)
+                        df[f'SMA_{long_window}'] = ta.trend.sma_indicator(df['price'], window=long_window)
+                        
+                        # Filter down to relevant columns for clean chart
+                        chart_data = df[['price', f'SMA_{short_window}', f'SMA_{long_window}']]
+                        
+                        st.line_chart(chart_data)
+                        
+                        # Show latest values
+                        latest = df.iloc[-1]
+                        st.metric("Latest Price", f"${latest['price']:.2f}")
+                        st.text(f"SMA {short_window}: {latest[f'SMA_{short_window}']:.2f}")
+                        st.text(f"SMA {long_window}: {latest[f'SMA_{long_window}']:.2f}")
+                        
+                    else:
+                        st.warning(f"No price data found for {selected_symbol}.")
+                        
+                except Exception as e:
+                    st.error(f"Error loading graph: {e}")
+    else:
+        st.warning("DB Not Connected - Cannot plot graphs.")
 
 st.markdown("---")
 st.markdown("### System Logs")

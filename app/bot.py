@@ -9,6 +9,9 @@ from collections import deque
 from datetime import datetime
 from dotenv import load_dotenv
 
+# Binance Connector
+from binance.websocket.spot.websocket_stream import SpotWebsocketStreamClient
+
 # Add current directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -24,10 +27,20 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log")
+        logging.FileHandler("bot.log"),
+        logging.FileHandler("api_logs.txt") # Capture logs here too for the dashboard
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Also log uncaught exceptions
+def handle_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+
+sys.excepthook = handle_exception
 
 class TradingBot:
     def __init__(self, config_path):
@@ -36,10 +49,17 @@ class TradingBot:
         self.setup_persistence()
         self.setup_strategies()
         
-        # In-memory data storage
-        self.price_history = {symbol: deque(maxlen=2000) for symbol in self.symbols}
-        self.start_time = time.time()
+        # In-memory storage for candles
+        # { symbol: DataFrame or List of Dicts }
+        # We keep slightly more than needed for long_window (e.g. 200)
+        self.candles = {symbol: deque(maxlen=200) for symbol in self.symbols}
         
+        # Latest prices for quick lookup
+        self.latest_prices = {}
+        
+        self.start_time = time.time()
+        self.ws_client = None
+
     def load_config(self, path):
         with open(path, 'r') as f:
             self.config = json.load(f)
@@ -47,8 +67,10 @@ class TradingBot:
         self.symbols = self.config['trading']['symbols']
         self.base_currency = self.config['trading']['base_currency']
         self.risk_per_trade = self.config['trading']['risk_per_trade']
+        self.interval = self.config['trading'].get('interval', '1m')
         
     def setup_exchange(self):
+        # REST client for Order Execution (still needed)
         exch_config = self.config['exchange']
         exchange_id = exch_config['id']
         exchange_class = getattr(ccxt, exchange_id)
@@ -62,7 +84,10 @@ class TradingBot:
         
         if exch_config.get('testnet'):
             self.exchange.set_sandbox_mode(True)
-            
+            self.ws_base_url = "wss://testnet.binance.vision" 
+        else:
+            self.ws_base_url = "wss://stream.binance.com:9443"
+
     def setup_persistence(self):
         try:
             self.db = DynamoManager(self.config)
@@ -83,56 +108,113 @@ class TradingBot:
                 except Exception as e:
                     logger.error(f"Failed to load strategy {name}: {e}")
 
-    def fetch_data(self):
-        for symbol in self.symbols:
-            try:
-                ticker = self.exchange.fetch_ticker(symbol)
-                price = ticker['last']
-                timestamp = ticker['timestamp']
-                
-                self.price_history[symbol].append({
-                    'timestamp': timestamp,
-                    'price': price,
-                    'close': price,
-                    'volume': ticker.get('baseVolume', 0)
-                })
-                
-                self.db.log_price(symbol, price)
-                
-            except Exception as e:
-                logger.error(f"Error fetching data for {symbol}: {e}")
+    # --- WebSocket Handling ---
 
-    def execute_strategies(self):
-        for symbol in self.symbols:
-            if len(self.price_history[symbol]) < 100:
-                continue
-                
-            df = pd.DataFrame(self.price_history[symbol])
+    def start_websocket(self):
+        logger.info(f"Starting WebSocket Client ({self.interval})...")
+        self.ws_client = SpotWebsocketStreamClient(
+            stream_url=self.ws_base_url,
+            on_message=self.on_message,
+            on_error=self.on_error,
+            on_close=self.on_close,
+            is_combined=True
+        )
+        
+        # Subscribe to Kline streams
+        streams = [f"{symbol.replace('/', '').lower()}@kline_{self.interval}" for symbol in self.symbols]
+        self.ws_client.subscribe(stream=streams)
+        logger.info(f"Subscribed to: {streams}")
+
+    def on_message(self, _, message):
+        try:
+            data = json.loads(message)
+            if 'e' in data and data['e'] == 'kline':
+                self.process_kline(data)
+        except Exception as e:
+            logger.error(f"WS Message Error: {e}")
+
+    def on_error(self, _, error):
+        logger.error(f"WebSocket Error: {error}")
+
+    def on_close(self, _, *args):
+        logger.warning("WebSocket Closed. Attempting Reconnect...")
+        time.sleep(5)
+        self.start_websocket()
+
+    def process_kline(self, data):
+        # Extract Candle Data
+        k = data['k']
+        symbol = data['s'] # e.g. BTCUSDT (Need to map back to BTC/USDT if necessary, but config symbols are BTC/USDT)
+        
+        # Map raw symbol data 's' (BTCUSDT) to config symbol (BTC/USDT)
+        # Simple lookup:
+        target_symbol = None
+        for s in self.symbols:
+            if s.replace('/', '') == symbol:
+                target_symbol = s
+                break
+        
+        if not target_symbol:
+            return
+
+        is_closed = k['x'] # boolean
+        close_price = float(k['c'])
+        
+        self.latest_prices[target_symbol] = close_price
+        
+        # logic: We only really commit to memory and run strategies on CLOSE of a candle
+        # to mimic standard technical analysis.
+        if is_closed:
+            candle = {
+                'timestamp': k['t'], # Open time (ms)
+                'open': float(k['o']),
+                'high': float(k['h']),
+                'low': float(k['l']),
+                'close': float(k['c']),
+                'volume': float(k['v']),
+                'symbol': target_symbol
+            }
             
-            for name, strategy in self.strategies.items():
-                signal = strategy.calculate(df)
-                
-                if signal:
-                    logger.info(f"Signal {signal} for {symbol} from {name}")
-                    self.execute_trade(symbol, signal, name, df.iloc[-1]['price'])
+            # 1. Update Memory
+            self.candles[target_symbol].append(candle)
+            
+            # 2. Run Strategy
+            self.run_strategy(target_symbol)
+        
+    def run_strategy(self, symbol):
+        if len(self.candles[symbol]) < 50: # Minimum warmup
+            return
+
+        df = pd.DataFrame(self.candles[symbol])
+        
+        # Execute Strategies
+        for name, strategy in self.strategies.items():
+            signal = strategy.calculate(df) # This adds indicator columns to df
+            
+            if signal:
+                logger.info(f"Signal {signal} for {symbol} from {name}")
+                self.execute_trade(symbol, signal, name, df.iloc[-1]['close'])
+
+        # Log Full Candle + Indicators to DB
+        last_row = df.iloc[-1].to_dict()
+        self.db.log_candle(last_row)
 
     def execute_trade(self, symbol, action, algo, price):
         try:
             amount = 0.001 
+            # (Same trade logic as before, potentially optimized later)
             
             if self.exchange.has['fetchMarkets']:
                 if not self.exchange.markets:
                     self.exchange.load_markets()
-                
                 market = self.exchange.market(symbol)
                 min_amount = market['limits']['amount']['min']
-                
                 if min_amount:
                     amount = min_amount
             
             if not self.exchange.apiKey:
                 logger.warning("No API Keys - Dry Run Trade")
-                order = {'id': 'mock-'+str(int(time.time())), 'price': price, 'amount': amount}
+                order = {'id': 'ws-mock-'+str(int(time.time())), 'price': price, 'amount': amount}
             else:
                 side = action.lower() 
                 order = self.exchange.create_order(symbol, 'market', side, amount)
@@ -145,7 +227,6 @@ class TradingBot:
                 'pnl': 0,
                 'algo': algo
             }
-            
             self.db.log_trade(trade_data)
             logger.info(f"Executed {action} for {symbol} | Qty: {amount} | Price: {price}")
             
@@ -154,32 +235,75 @@ class TradingBot:
 
     def log_status(self):
         uptime = int(time.time() - self.start_time)
-        msg = f"STATUS: Running for {uptime}s | Strategies: {len(self.strategies)} | Symbols: {len(self.symbols)}"
-        for symbol in self.symbols:
-            last_price = self.price_history[symbol][-1]['price'] if self.price_history[symbol] else 'N/A'
-            msg += f" | {symbol}: {last_price}"
+        msg = f"STATUS: Running for {uptime}s | Interval: {self.interval}"
+        for symbol, price in self.latest_prices.items():
+            msg += f" | {symbol}: {price}"
         logger.info(msg)
 
+    def backfill_history(self):
+        logger.info(f"Backfilling history for {len(self.symbols)} symbols (100 candles)...")
+        for symbol in self.symbols:
+            try:
+                logger.info(f"API REQUEST: fetch_ohlcv({symbol}, {self.interval}, limit=100)")
+                
+                # fetch_ohlcv returns [timestamp, open, high, low, close, volume]
+                ohlcv = self.exchange.fetch_ohlcv(symbol, self.interval, limit=100)
+                logger.info(f"API RESPONSE: Received {len(ohlcv)} candles for {symbol}")
+                
+                new_candles = []
+                for candle in ohlcv:
+                    new_candles.append({
+                        'timestamp': candle[0],
+                        'open': float(candle[1]),
+                        'high': float(candle[2]),
+                        'low': float(candle[3]),
+                        'close': float(candle[4]),
+                        'volume': float(candle[5]),
+                        'symbol': symbol
+                    })
+                
+                # Update Memory
+                self.candles[symbol].extend(new_candles)
+                
+                if len(new_candles) > 0:
+                    df = pd.DataFrame(self.candles[symbol])
+                    
+                    # Calculate Indicators
+                    for name, strategy in self.strategies.items():
+                        strategy.calculate(df)
+                        
+                    logger.info(f"Persisting {len(df)} backfilled candles for {symbol} to DB...")
+                    count = 0
+                    for index, row in df.iterrows():
+                        self.db.log_candle(row.to_dict())
+                        count += 1
+                        if count % 10 == 0: sum = 0 # Dummy op to not spam logs too distinct
+                    
+                    logger.info(f"Successfully persisted {count} candles for {symbol}.")
+                    
+                    # Set the latest price for status
+                    self.latest_prices[symbol] = new_candles[-1]['close']
+                    
+            except Exception as e:
+                logger.error(f"Backfill failed for {symbol}: {e}")
+                logger.exception("Backfill traceback:")
+
     def run(self):
-        logger.info("Bot started...")
+        # 1. Backfill first
+        self.backfill_history()
+        
+        # 2. Start WS
+        self.start_websocket()
+        logger.info("Bot is listening...")
+        
         counter = 0
         while True:
-            try:
-                self.fetch_data()
-                self.execute_strategies()
-                
-                # Log status every minute (approx every 6 cycles of 10s)
-                counter += 1
-                if counter % 6 == 0:
-                    self.log_status()
-                    
-                time.sleep(10)
-            except KeyboardInterrupt:
-                logger.info("Bot stopped by user.")
-                break
-            except Exception as e:
-                logger.exception(f"Unexpected error in main loop: {e}")
-                time.sleep(10) # Wait before retry to avoid rapid loops
+            # Keep main thread alive
+            time.sleep(10)
+            
+            counter += 1
+            if counter % 6 == 0: # Every ~60s
+                self.log_status()
 
 if __name__ == "__main__":
     bot = TradingBot('config.json')

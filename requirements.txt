@@ -4,3 +4,5 @@ pandas
 ta
 streamlit
 python-dotenv
+plotly
+binance-connector

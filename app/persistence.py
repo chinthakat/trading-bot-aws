@@ -3,6 +3,7 @@ import time
 import uuid
 from botocore.exceptions import ClientError
 from decimal import Decimal
+import math
 
 class DynamoManager:
     def __init__(self, config):
@@ -41,21 +42,71 @@ class DynamoManager:
         except ClientError as e:
             print(f"Error logging trade: {e}")
 
-    def log_price(self, symbol, price):
+    def log_candle(self, candle_data):
         """
-        Logs historical price (optional, as main storage is usually better suited for TimeStream or just using deque in mem).
+        Logs a closed candle with indicators.
+        candle_data: dict with symbol, timestamp, open, high, low, close, volume, and indicators
+        """
+        try:
+            # TTL: Expire after 7 days
+            expiry = int(time.time()) + 604800
+            
+            # Prepare Item
+            item = {
+                'symbol': candle_data['symbol'],
+                'timestamp': int(candle_data['timestamp']),
+                'expiry': expiry
+            }
+            
+            for k, v in candle_data.items():
+                if k in ['symbol', 'timestamp']:
+                    continue
+                
+                # Robust NaN/Inf check using string representation
+                # This catches float('nan'), numpy.nan, etc.
+                s_val = str(v).lower()
+                if s_val in ['nan', 'inf', '-inf']:
+                    continue
+                
+                # Attempt to convert to Decimal for DynamoDB (handles floats, ints, numpy types)
+                try:
+                    item[k] = Decimal(str(v))
+                except:
+                    # If not a number, store as is
+                    item[k] = v
+                    
+            self.prices_table.put_item(Item=item)
+        except ClientError as e:
+            print(f"Error logging candle: {e}")
+
+    def log_price(self, symbol, price, **kwargs):
+        """
+        Logs historical price and any additional indicators.
         """
         try:
             # TTL: Expire after 7 days (604800 seconds)
             expiry = int(time.time()) + 604800
-            self.prices_table.put_item(
-                Item={
-                    'symbol': symbol,
-                    'timestamp': int(time.time() * 1000),
-                    'price': Decimal(str(price)),
-                    'expiry': expiry
-                }
-            )
+            
+            item = {
+                'symbol': symbol,
+                'timestamp': int(time.time() * 1000),
+                'price': Decimal(str(price)),
+                'expiry': expiry
+            }
+            
+            # Add extra fields (e.g. indicators)
+            for k, v in kwargs.items():
+                # Robust NaN/Inf check
+                s_val = str(v).lower()
+                if s_val in ['nan', 'inf', '-inf']:
+                    continue
+                
+                try:
+                    item[k] = Decimal(str(v))
+                except:
+                    item[k] = v
+                    
+            self.prices_table.put_item(Item=item)
         except ClientError as e:
             print(f"Error logging price: {e}")
 
@@ -64,8 +115,27 @@ class DynamoManager:
         Fetch recent trades.
         """
         try:
+            # Better to Query by Index if we had one, but Scan ok for small MVP limit
+            # To sort by timestamp desc, we might need to fetch more and sort in app
             response = self.trades_table.scan(Limit=limit)
-            return response.get('Items', [])
+            items = response.get('Items', [])
+            return sorted(items, key=lambda x: x['timestamp'], reverse=True)
         except ClientError as e:
             print(f"Error fetching trades: {e}")
+            return []
+
+    def get_price_history(self, symbol, limit=200):
+        """
+        Fetch price history for a specific symbol using Query.
+        """
+        try:
+            from boto3.dynamodb.conditions import Key
+            response = self.prices_table.query(
+                KeyConditionExpression=Key('symbol').eq(symbol),
+                ScanIndexForward=True, # Ascending time (older first)
+                Limit=limit
+            )
+            return response.get('Items', [])
+        except ClientError as e:
+            print(f"Error fetching prices for {symbol}: {e}")
             return []
