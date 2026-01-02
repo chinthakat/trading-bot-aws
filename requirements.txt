@@ -1,0 +1,6 @@
+boto3
+ccxt
+pandas
+ta
+streamlit
+python-dotenv
