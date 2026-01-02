@@ -51,8 +51,9 @@ class TradingBot:
         
         # In-memory storage for candles
         # { symbol: DataFrame or List of Dicts }
-        # We keep slightly more than needed for long_window (e.g. 200)
-        self.candles = {symbol: deque(maxlen=200) for symbol in self.symbols}
+        # We keep slightly more than needed for long_window (e.g. 500)
+        self.candles = {symbol: deque(maxlen=500) for symbol in self.symbols}
+        logger.info("Initialized candles with maxlen: 500")
         
         # Latest prices for quick lookup
         self.latest_prices = {}
@@ -198,6 +199,9 @@ class TradingBot:
         # Log Full Candle + Indicators to DB
         last_row = df.iloc[-1].to_dict()
         self.db.log_candle(last_row)
+        
+        # Explicit Log for User Clarity
+        logger.info(f"REALTIME UPDATE ({symbol}): Close={last_row['close']} | SMA_S={last_row.get('sma_short', 'N/A')} | SMA_L={last_row.get('sma_long', 'N/A')}")
 
     def execute_trade(self, symbol, action, algo, price):
         try:
@@ -241,13 +245,16 @@ class TradingBot:
         logger.info(msg)
 
     def backfill_history(self):
-        logger.info(f"Backfilling history for {len(self.symbols)} symbols (100 candles)...")
+        # We need enough history for the Long SMA (100) to have valid values.
+        # 100 candles isn't enough (results in 1 valid point).
+        limit = 500
+        logger.info(f"Backfilling history for {len(self.symbols)} symbols ({limit} candles)...")
         for symbol in self.symbols:
             try:
-                logger.info(f"API REQUEST: fetch_ohlcv({symbol}, {self.interval}, limit=100)")
+                logger.info(f"API REQUEST: fetch_ohlcv({symbol}, {self.interval}, limit={limit})")
                 
                 # fetch_ohlcv returns [timestamp, open, high, low, close, volume]
-                ohlcv = self.exchange.fetch_ohlcv(symbol, self.interval, limit=100)
+                ohlcv = self.exchange.fetch_ohlcv(symbol, self.interval, limit=limit)
                 logger.info(f"API RESPONSE: Received {len(ohlcv)} candles for {symbol}")
                 
                 new_candles = []
@@ -304,6 +311,11 @@ class TradingBot:
             counter += 1
             if counter % 6 == 0: # Every ~60s
                 self.log_status()
+                # Log a heartbeat to api_logs.txt so user knows it's alive
+                with open("api_logs.txt", "a") as f:
+                     price = self.latest_prices.get(self.symbols[0], "N/A")
+                     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                     f.write(f"{ts} [WS UPDATE] Bot is alive | Price: {price}\n")
 
 if __name__ == "__main__":
     bot = TradingBot('config.json')
