@@ -200,11 +200,28 @@ class TradingBot:
                 'symbol': target_symbol
             }
             
-            # REAL-TIME PERSISTENCE
-            self.db.log_candle(candle)
+            # --- REAL-TIME INDICATOR CALCULATION ---
+            # Create a customized copy of history + current candle to calculate indicators continuously
+            temp_history = list(self.candles[target_symbol])
+            temp_history.append(candle)
+            
+            cand_data_to_log = candle # Default to raw candle
+            
+            if len(temp_history) >= 20: # Minimal check, strategies have their own checks
+                try:
+                    df_temp = pd.DataFrame(temp_history)
+                    for name, strategy in self.strategies.items():
+                        strategy.calculate(df_temp)
+                    
+                    # Get the last row (our live candle) which now has indicators
+                    cand_data_to_log = df_temp.iloc[-1].to_dict()
+                except Exception as calc_err:
+                    logger.error(f"RT Calc Error: {calc_err}")
+
+            # PERSIST LIVE CANDLE WITH INDICATORS
+            self.db.log_candle(cand_data_to_log)
+
         except Exception as e:
-            with open("ws_debug.log", "a") as f:
-                f.write(f"{datetime.now()} PROCESS ERROR: {e}\n")
             logger.error(f"Real-time persist error: {e}")
         
         # logic: We only really commit to memory and run strategies on CLOSE of a candle
