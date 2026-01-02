@@ -88,55 +88,55 @@ class PositionManager:
     def place_limit_order(self, symbol: str, side: str, current_price: float, amount: float) -> Optional[Dict]:
         """
         Place a limit order with slight offset from current price.
-        
-        Args:
-            symbol: Trading pair (e.g., "BTC/USDT")
-            side: "buy" or "sell"
-            current_price: Current market price
-            amount: Quantity to trade
-            
-        Returns:
-            Order data dict or None if failed
+        Routes to simulator in TEST mode or real exchange in LIVE mode.
         """
         try:
-            # Calculate limit price with small offset to increase fill probability
-            # Buy slightly above market, sell slightly below
+            # Calculate limit price with small offset
             offset_pct = 0.001  # 0.1%
             if side.lower() == 'buy':
                 limit_price = current_price * (1 + offset_pct)
             else:
                 limit_price = current_price * (1 - offset_pct)
             
-            # Round to appropriate precision
-            market = self.exchange.market(symbol)
-            price_precision = market['precision']['price']
-            limit_price = self.exchange.price_to_precision(symbol, limit_price)
-            
-            logger.info(f"Placing {side} limit order: {symbol} @ {limit_price} qty={amount}")
-            
-            # Place the order
-            order = self.exchange.create_limit_order(symbol, side, amount, limit_price)
-            
-            # Track order
-            order_data = {
-                'order_id': order['id'],
-                'symbol': symbol,
-                'side': side,
-                'price': limit_price,
-                'amount': amount,
-                'status': 'pending',
-                'created_at': datetime.now(),
-                'expires_at': datetime.now() + timedelta(seconds=self.order_ttl_seconds)
-            }
-            
-            self.pending_orders[order['id']] = order_data
-            
-            # Persist to database
-            self.db.log_order(order_data)
-            
-            logger.info(f"Order placed successfully: {order['id']}")
-            return order_data
-            
+            if self.mode == "TEST":
+                # Paper trading - use simulator
+                order_data = self.simulator.place_limit_order(symbol, side, limit_price, amount)
+                self.pending_orders[order_data['order_id']] = order_data
+                
+                # Log to test tables
+                table = getattr(self.db, f"{self.orders_table_name}_table")
+                self.db.log_order(order_data)  # This will need to be adapted for test tables
+                
+                return order_data
+                
+            else:  # LIVE mode
+                # Round to appropriate precision
+                market = self.exchange.market(symbol)
+                limit_price = self.exchange.price_to_precision(symbol, limit_price)
+                
+                logger.info(f"[LIVE] Placing {side} limit order: {symbol} @ {limit_price} qty={amount}")
+                
+                # Place real order
+                order = self.exchange.create_limit_order(symbol, side, amount, limit_price)
+                
+                # Track order
+                order_data = {
+                    'order_id': order['id'],
+                    'symbol': symbol,
+                    'side': side,
+                    'price': limit_price,
+                    'amount': amount,
+                    'status': 'pending',
+                    'created_at': datetime.now(),
+                    'expires_at': datetime.now() + timedelta(seconds=self.order_ttl_seconds)
+                }
+                
+                self.pending_orders[order['id']] = order_data
+                self.db.log_order(order_data)
+                
+                logger.info(f"[LIVE] Order placed successfully: {order['id']}")
+                return order_data
+                
         except Exception as e:
             logger.error(f"Failed to place limit order for {symbol}: {e}")
             return None
