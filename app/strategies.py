@@ -1,5 +1,8 @@
 import pandas as pd
 import ta
+import logging
+
+logger = logging.getLogger(__name__)
 
 class BaseStrategy:
     def __init__(self, config):
@@ -36,10 +39,14 @@ class MaCrossoverStrategy(BaseStrategy):
         # Check for Crossover
         # BUY: Short crosses above Long
         if prev_row['sma_short'] <= prev_row['sma_long'] and last_row['sma_short'] > last_row['sma_long']:
+            logger.info(f"🟢 BUY SIGNAL: SMA({self.short_window}) crossed ABOVE SMA({self.long_window}) | "
+                       f"Short: {last_row['sma_short']:.2f}, Long: {last_row['sma_long']:.2f}")
             return 'BUY'
         
         # SELL: Short crosses below Long
         if prev_row['sma_short'] >= prev_row['sma_long'] and last_row['sma_short'] < last_row['sma_long']:
+            logger.info(f"🔴 SELL SIGNAL: SMA({self.short_window}) crossed BELOW SMA({self.long_window}) | "
+                       f"Short: {last_row['sma_short']:.2f}, Long: {last_row['sma_long']:.2f}")
             return 'SELL'
             
         return None
