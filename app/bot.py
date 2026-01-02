@@ -393,6 +393,9 @@ class TradingBot:
             
             # Check orders every 10s (every iteration)
             try:
+                # Sync external orders (e.g. manual dashboard trades)
+                self.position_manager.sync_pending_orders()
+                
                 # Unified order status check (handles both TEST and LIVE modes)
                 for order_id in list(self.position_manager.pending_orders.keys()):
                     order_data = self.position_manager.pending_orders.get(order_id)
