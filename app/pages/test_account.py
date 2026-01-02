@@ -30,10 +30,10 @@ render_account_summary(db, "TEST", config)
 tab1, tab2, tab3 = st.tabs(["📋 Test Positions", "📦 Test Orders", "📈 All Signals"])
 
 with tab1:
-    render_positions_table(db.test_positions_table)
+    render_positions_table(db, "TEST")
 
 with tab2:
-    render_orders_table(db.test_orders_table)
+    render_orders_table(db, "TEST")
 
 with tab3:
     # Note: Signals are currently shared/mixed. 

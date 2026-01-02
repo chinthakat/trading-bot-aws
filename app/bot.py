@@ -393,23 +393,33 @@ class TradingBot:
             
             # Check orders every 10s (every iteration)
             try:
-                # Sync external orders (e.g. manual dashboard trades)
-                self.position_manager.sync_pending_orders()
+                # 1. Sync State (New Orders, Cancel/Close Requests, Risk Updates)
+                self.position_manager.sync_state()
+
+                # 2. Check for Forced Close Requests
+                pos = self.position_manager.current_position
+                if pos and pos.get('force_close', False):
+                    # Find price
+                    symbol = pos['symbol']
+                    current_price = self.latest_prices.get(symbol)
+                    
+                    if current_price:
+                        logger.info(f"Detected FORCE CLOSE request for {pos['position_id']}")
+                        self.position_manager.close_position(current_price=current_price)
+                        pos['force_close'] = False
                 
-                # Unified order status check (handles both TEST and LIVE modes)
+                # 3. Regular Order Status Check
                 for order_id in list(self.position_manager.pending_orders.keys()):
                     order_data = self.position_manager.pending_orders.get(order_id)
                     if order_data:
                         symbol = order_data['symbol']
                         current_price = self.latest_prices.get(symbol)
-                        
-                        # Check status (simulates fill in TEST mode, fetches from exchange in LIVE mode)
                         self.position_manager.check_order_status(order_id, current_price)
                 
-                # Cancel expired orders
+                # 4. Cancel expired orders
                 self.position_manager.cancel_expired_orders()
                 
-                # Update P&L for open positions
+                # 5. Update P&L for open positions
                 for symbol in self.symbols:
                     if symbol in self.latest_prices:
                         self.position_manager.update_position_pnl(symbol, self.latest_prices[symbol])
