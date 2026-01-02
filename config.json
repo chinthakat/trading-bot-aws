@@ -3,6 +3,7 @@
         "region": "ap-southeast-2",
         "tables": {
             "trades": "TradingBot_Trades",
+            "logs": "TradingBot_Logs",
             "stats": "TradingBot_Stats",
             "prices": "TradingBot_Prices",
             "signals": "TradingBot_Signals"
@@ -10,15 +11,19 @@
     },
     "exchange": {
         "id": "binance",
-        "testnet": true,
+        "testnet": false,
         "options": {
-            "defaultType": "future"
+            "defaultType": "spot",
+            "adjustForTimeDifference": true
         }
     },
     "trading": {
         "symbols": [
             "BTC/USDT"
         ],
+        "base_currency": "USDT",
+        "risk_per_trade": 10.0,
+        "interval": "1m",
         "active_strategies": {
             "MA_Crossover": {
                 "enabled": true,
@@ -27,8 +32,6 @@
                     "long_period": 100
                 }
             }
-        },
-        "base_currency": "USDT",
-        "risk_per_trade": 0.01
+        }
     }
 }

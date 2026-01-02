@@ -39,8 +39,14 @@ def create_dynamodb_tables():
             ]
         },
         TABLES['prices']: {
-            'KeySchema': [{'AttributeName': 'symbol', 'KeyType': 'HASH'}],
-            'AttributeDefinitions': [{'AttributeName': 'symbol', 'AttributeType': 'S'}]
+            'KeySchema': [
+                {'AttributeName': 'symbol', 'KeyType': 'HASH'},
+                {'AttributeName': 'timestamp', 'KeyType': 'RANGE'}
+            ],
+            'AttributeDefinitions': [
+                {'AttributeName': 'symbol', 'AttributeType': 'S'},
+                {'AttributeName': 'timestamp', 'AttributeType': 'N'}
+            ]
         },
         TABLES['signals']: {
             'KeySchema': [{'AttributeName': 'signal_id', 'KeyType': 'HASH'}],
