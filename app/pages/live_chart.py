@@ -147,6 +147,32 @@ if items:
         )
         filled_orders = order_response.get('Items', [])
         
+        # Get signals
+        signal_response = db.signals_table.scan(
+            FilterExpression='symbol = :sym',
+            ExpressionAttributeValues={':sym': symbol}
+        )
+        signals = signal_response.get('Items', [])
+        
+        # Plot Signal Markers (stars/crosses)
+        for signal in signals:
+            signal_time = pd.to_datetime(int(signal['timestamp']), unit='ms')
+            signal_price = float(signal['price'])
+            signal_type = signal['signal']
+            
+            marker_color = 'blue' if signal_type == 'BUY' else 'orange'
+            marker_symbol = 'star' if signal_type == 'BUY' else 'x'
+            
+            fig.add_trace(go.Scatter(
+                x=[signal_time],
+                y=[signal_price],
+                mode='markers',
+                marker=dict(size=12, color=marker_color, symbol=marker_symbol, line=dict(width=1, color='darkblue' if signal_type == 'BUY' else 'darkorange')),
+                name=f'Signal {signal_type}',
+                showlegend=True,
+                hovertemplate=f'<b>{signal_type} SIGNAL</b><br>Price: ${signal_price:.2f}<br>Time: {signal_time}<br>Algo: {signal.get("algo", "N/A")}<extra></extra>'
+            ))
+        
         # Plot Position Entry Markers (🔵 BUY, 🔴 SELL)
         for pos in positions:
             entry_time = pd.to_datetime(int(pos['entry_time']), unit='ms')
