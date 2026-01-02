@@ -340,8 +340,7 @@ class PositionManager:
             else:
                 table = self.db.orders_table
             
-            # Scan for pending status (Inefficient for large tables, but fine for now)
-            # Better: Query by GSI if available
+            # Scan for pending status
             response = table.scan(
                 FilterExpression='#st = :pending',
                 ExpressionAttributeNames={'#st': 'status'},
@@ -349,12 +348,16 @@ class PositionManager:
             )
             db_orders = response.get('Items', [])
             
+            if db_orders:
+                print(f"[{self.mode}] Found {len(db_orders)} pending orders in DB: {[o['order_id'] for o in db_orders]}")
+                
             # 2. Update local state
             for order in db_orders:
                 order_id = order['order_id']
                 
                 # If we don't know about this order, add it
                 if order_id not in self.pending_orders:
+                    print(f"[{self.mode}] Discovered NEW external pending order: {order_id}")
                     logger.info(f"[{self.mode}] Discovered external pending order: {order_id}")
                     
                     # Convert DynamoDB Decimals to float
@@ -369,11 +372,13 @@ class PositionManager:
                             # Ensure types are correct for simulator
                             sim_order['created_at'] = datetime.fromtimestamp(int(order['created_at'])/1000) if isinstance(order['created_at'], (int, float, str)) else datetime.now()
                             self.simulator.pending_orders[order_id] = sim_order
+                            print(f"[{self.mode}] Injected order {order_id} into COMPONENT simulator")
                             logger.info(f"[{self.mode}] Injected order {order_id} into simulator")
                     
                     self.pending_orders[order_id] = order
                     
         except Exception as e:
+            print(f"Error syncing pending orders: {e}")
             logger.error(f"Error syncing pending orders: {e}")
     
     def get_account_pnl(self) -> Dict:
