@@ -384,22 +384,15 @@ class TradingBot:
             
             # Check orders every 10s (every iteration)
             try:
-                # For TEST mode, simulate fills based on current price
-                if hasattr(self.position_manager, 'simulator') and self.position_manager.simulator:
-                    for order_id in list(self.position_manager.pending_orders.keys()):
-                        order_data = self.position_manager.pending_orders.get(order_id)
-                        if order_data:
-                            symbol = order_data['symbol']
-                            if symbol in self.latest_prices:
-                                # Simulate fill if price crossed limit
-                                filled = self.position_manager.simulator.simulate_fill(order_id, self.latest_prices[symbol])
-                                if filled:
-                                    # Remove from pending
-                                    self.position_manager.pending_orders.pop(order_id, None)
-                else:
-                    # LIVE mode - check real order status
-                    for order_id in list(self.position_manager.pending_orders.keys()):
-                        self.position_manager.check_order_status(order_id)
+                # Unified order status check (handles both TEST and LIVE modes)
+                for order_id in list(self.position_manager.pending_orders.keys()):
+                    order_data = self.position_manager.pending_orders.get(order_id)
+                    if order_data:
+                        symbol = order_data['symbol']
+                        current_price = self.latest_prices.get(symbol)
+                        
+                        # Check status (simulates fill in TEST mode, fetches from exchange in LIVE mode)
+                        self.position_manager.check_order_status(order_id, current_price)
                 
                 # Cancel expired orders
                 self.position_manager.cancel_expired_orders()
