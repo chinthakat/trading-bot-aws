@@ -263,10 +263,15 @@ class DynamoManager:
         except ClientError as e:
             print(f"Error updating order: {e}")
     
-    def get_account_pnl(self):
+    def get_account_pnl(self, mode="LIVE"):
         """Get account-level P&L statistics."""
         try:
-            response = self.positions_table.scan()
+            if mode == "TEST":
+                table = self.test_positions_table
+            else:
+                table = self.positions_table
+                
+            response = table.scan()
             positions = response.get('Items', [])
             
             total_pnl = 0
