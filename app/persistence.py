@@ -50,6 +50,27 @@ class DynamoManager:
             print(f"Logged trade: {item['trade_id']}")
         except ClientError as e:
             print(f"Error logging trade: {e}")
+    
+    def log_signal(self, signal_data):
+        """
+        Logs a trading signal to DynamoDB.
+        signal_data: dict with keys like symbol, signal, algo, price, timestamp
+        """
+        try:
+            # Convert any Decimal/float values
+            item = {
+                'symbol': signal_data['symbol'],
+                'signal': signal_data['signal'],
+                'algo': signal_data.get('algo', 'UNKNOWN'),
+                'price': Decimal(str(signal_data['price'])),
+                'timestamp': signal_data['timestamp']
+            }
+            
+            self.signals_table.put_item(Item=item)
+            logger.info(f"Signal logged: {signal_data['signal']} for {signal_data['symbol']}")
+        except Exception as e:
+            logger.error(f"Error logging signal: {e}")
+
 
     def log_candle(self, candle_data):
         """
