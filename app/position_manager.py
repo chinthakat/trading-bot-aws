@@ -103,9 +103,19 @@ class PositionManager:
                 order_data = self.simulator.place_limit_order(symbol, side, limit_price, amount)
                 self.pending_orders[order_data['order_id']] = order_data
                 
-                # Log to test tables
-                table = getattr(self.db, f"{self.orders_table_name}_table")
-                self.db.log_order(order_data)  # This will need to be adapted for test tables
+                # Log to test tables - use appropriate method or direct table access
+                try:
+                    # Convert datetime to timestamp for DynamoDB
+                    order_log = order_data.copy()
+                    order_log['created_at'] = int(order_data['created_at'].timestamp() * 1000)
+                    if 'expires_at' in order_log:
+                        order_log['expires_at'] = int(order_data['expires_at'].timestamp() * 1000)
+                    
+                    # Log to test orders table
+                    self.db.test_orders_table.put_item(Item=order_log)
+                    logger.info(f"[TEST] Order logged to test_orders table: {order_data['order_id']}")
+                except Exception as e:
+                    logger.error(f"Failed to log test order to DB: {e}")
                 
                 return order_data
                 
