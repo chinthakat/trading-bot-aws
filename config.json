@@ -45,6 +45,7 @@
             "use_min_quantity": true,
             "order_ttl": 300,
             "max_slippage_pct": 0.5
-        }
+        },
+        "manual_trading_enabled": true
     }
 }
