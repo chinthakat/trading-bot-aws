@@ -42,6 +42,35 @@ else:
     positions_table = db.positions_table
     orders_table = db.orders_table
 
+# === Account Summary ===
+st.subheader(f"🏦 Account Summary ({mode})")
+
+# Get P&L Stats
+pnl_stats = db.get_account_pnl(mode=mode)
+
+# Calculate Balance (Mock logic for now, or fetch from DB if we persisted account state)
+initial_balance = config['trading'].get('test_initial_balance', 10000.0)
+current_balance = initial_balance + pnl_stats['closed_pnl'] # Simple approximation
+equity = current_balance + pnl_stats['open_pnl']
+
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric("Total Equity", f"${equity:,.2f}", delta=f"{pnl_stats['total_pnl']:,.2f}")
+
+with col2:
+    st.metric("Cash Balance", f"${current_balance:,.2f}")
+
+with col3:
+    st.metric("Open P&L", f"${pnl_stats['open_pnl']:,.2f}", 
+             delta_color="normal" if pnl_stats['open_pnl'] >= 0 else "inverse")
+
+with col4:
+    win_rate = pnl_stats['win_rate'] * 100
+    st.metric("Win Rate", f"{win_rate:.1f}%", help=f"{pnl_stats['win_count']}W - {pnl_stats['loss_count']}L")
+
+st.divider()
+
 # Create tabs
 tab1, tab2, tab3 = st.tabs(["📋 All Positions", "📦 All Orders", "📈 Signals"])
 
