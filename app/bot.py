@@ -114,8 +114,9 @@ class TradingBot:
     def setup_position_manager(self):
         """Initialize the position manager with risk controls."""
         risk_config = self.config['trading'].get('risk_management', {})
-        self.position_manager = PositionManager(self.exchange, self.db, risk_config)
-        logger.info(f"Position Manager initialized")
+        mode = self.config['trading'].get('mode', 'TEST')
+        self.position_manager = PositionManager(self.exchange, self.db, risk_config, mode)
+        logger.info(f"Position Manager initialized in {mode} mode")
 
 
     # --- WebSocket Handling ---
@@ -383,9 +384,22 @@ class TradingBot:
             
             # Check orders every 10s (every iteration)
             try:
-                # Check pending order status
-                for order_id in list(self.position_manager.pending_orders.keys()):
-                    self.position_manager.check_order_status(order_id)
+                # For TEST mode, simulate fills based on current price
+                if hasattr(self.position_manager, 'simulator') and self.position_manager.simulator:
+                    for order_id in list(self.position_manager.pending_orders.keys()):
+                        order_data = self.position_manager.pending_orders.get(order_id)
+                        if order_data:
+                            symbol = order_data['symbol']
+                            if symbol in self.latest_prices:
+                                # Simulate fill if price crossed limit
+                                filled = self.position_manager.simulator.simulate_fill(order_id, self.latest_prices[symbol])
+                                if filled:
+                                    # Remove from pending
+                                    self.position_manager.pending_orders.pop(order_id, None)
+                else:
+                    # LIVE mode - check real order status
+                    for order_id in list(self.position_manager.pending_orders.keys()):
+                        self.position_manager.check_order_status(order_id)
                 
                 # Cancel expired orders
                 self.position_manager.cancel_expired_orders()
