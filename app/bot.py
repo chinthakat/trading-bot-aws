@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from persistence import DynamoManager
 from strategies import StrategyRegistry
+from position_manager import PositionManager
 
 # Load environment variables
 load_dotenv()
@@ -48,6 +49,7 @@ class TradingBot:
         self.setup_exchange()
         self.setup_persistence()
         self.setup_strategies()
+        self.setup_position_manager()
         
         # In-memory storage for candles
         # { symbol: DataFrame or List of Dicts }
@@ -108,6 +110,13 @@ class TradingBot:
                     logger.info(f"Loaded strategy: {name}")
                 except Exception as e:
                     logger.error(f"Failed to load strategy {name}: {e}")
+    
+    def setup_position_manager(self):
+        """Initialize the position manager with risk controls."""
+        risk_config = self.config['trading'].get('risk_management', {})
+        self.position_manager = PositionManager(self.exchange, self.db, risk_config)
+        logger.info(f"Position Manager initialized")
+
 
     # --- WebSocket Handling ---
 

@@ -6,7 +6,9 @@
             "logs": "TradingBot_Logs",
             "stats": "TradingBot_Stats",
             "prices": "TradingBot_Prices",
-            "signals": "TradingBot_Signals"
+            "signals": "TradingBot_Signals",
+            "positions": "TradingBot_Positions",
+            "orders": "TradingBot_Orders"
         }
     },
     "exchange": {
@@ -32,6 +34,12 @@
                     "long_period": 100
                 }
             }
+        },
+        "risk_management": {
+            "max_positions": 1,
+            "use_min_quantity": true,
+            "order_ttl": 300,
+            "max_slippage_pct": 0.5
         }
     }
 }
