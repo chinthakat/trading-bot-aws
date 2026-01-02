@@ -68,13 +68,19 @@ def render_positions_table(positions_table):
             if not open_pos.empty:
                 cols = ['symbol', 'side', 'entry_price', 'quantity', 'entry_time']
                 if 'current_price' in open_pos.columns: cols.insert(3, 'current_price')
-                if 'pnl' in open_pos.columns: cols.append('pnl')
                 
-                # Style P&L
-                st.dataframe(open_pos[cols].style.applymap(
-                    lambda v: 'color: green' if v > 0 else 'color: red' if v < 0 else '', 
-                    subset=['pnl'] if 'pnl' in cols else None
-                ), use_container_width=True)
+                # Check if pnl exists and add it
+                has_pnl = 'pnl' in open_pos.columns
+                if has_pnl: cols.append('pnl')
+                
+                # Create styled dataframe only if PnL exists
+                if has_pnl:
+                    st.dataframe(open_pos[cols].style.applymap(
+                        lambda v: 'color: green' if (isinstance(v, (int, float)) and v > 0) else 'color: red' if (isinstance(v, (int, float)) and v < 0) else '', 
+                        subset=['pnl']
+                    ), use_container_width=True)
+                else:
+                    st.dataframe(open_pos[cols], use_container_width=True)
             else:
                 st.info("No open positions")
             
@@ -84,10 +90,15 @@ def render_positions_table(positions_table):
             st.markdown("### 📜 Closed Positions")
             if not closed_pos.empty:
                 cols = ['symbol', 'side', 'entry_price', 'exit_price', 'quantity', 'pnl', 'entry_time', 'exit_time']
-                st.dataframe(closed_pos[cols].style.applymap(
-                    lambda v: 'color: green' if v > 0 else 'color: red' if v < 0 else '', 
-                    subset=['pnl']
-                ), use_container_width=True)
+                
+                # Ensure pnl column handles NaNs gracefully before styling
+                if 'pnl' in closed_pos.columns:
+                     st.dataframe(closed_pos[cols].style.applymap(
+                        lambda v: 'color: green' if (isinstance(v, (int, float)) and v > 0) else 'color: red' if (isinstance(v, (int, float)) and v < 0) else '', 
+                        subset=['pnl']
+                    ), use_container_width=True)
+                else:
+                     st.dataframe(closed_pos[cols], use_container_width=True)
             else:
                 st.info("No closed positions")
         else:

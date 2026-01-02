@@ -6,3 +6,4 @@ streamlit
 python-dotenv
 plotly
 binance-connector
+Jinja2
