@@ -264,38 +264,36 @@ class TradingBot:
         logger.info(f"REALTIME UPDATE ({symbol}): Close={last_row['close']} | SMA_S={last_row.get('sma_short', 'N/A')} | SMA_L={last_row.get('sma_long', 'N/A')}")
 
     def execute_trade(self, symbol, action, algo, price):
+        """Execute trade using PositionManager with limit orders."""
         try:
-            amount = 0.001 
-            # (Same trade logic as before, potentially optimized later)
+            # Check if we can open a position
+            if not self.position_manager.can_open_position(symbol):
+                logger.info(f"Cannot execute {action} for {symbol}: position limit reached")
+                return
             
-            if self.exchange.has['fetchMarkets']:
-                if not self.exchange.markets:
-                    self.exchange.load_markets()
-                market = self.exchange.market(symbol)
-                min_amount = market['limits']['amount']['min']
-                if min_amount:
-                    amount = min_amount
+            # Calculate position size (uses exchange minimum)
+            amount = self.position_manager.calculate_position_size(symbol, price)
+            if amount is None:
+                logger.error(f"Failed to calculate position size for {symbol}")
+                return
             
+            # Dry run check
             if not self.exchange.apiKey:
-                logger.warning("No API Keys - Dry Run Trade")
-                order = {'id': 'ws-mock-'+str(int(time.time())), 'price': price, 'amount': amount}
-            else:
-                side = action.lower() 
-                order = self.exchange.create_order(symbol, 'market', side, amount)
-                
-            trade_data = {
-                'symbol': symbol,
-                'action': action,
-                'amount': amount,
-                'price': order.get('price', price),
-                'pnl': 0,
-                'algo': algo
-            }
-            self.db.log_trade(trade_data)
-            logger.info(f"Executed {action} for {symbol} | Qty: {amount} | Price: {price}")
+                logger.warning(f"No API Keys - Dry Run: Would place {action} limit order for {symbol}")
+                return
             
+            # Place limit order via PositionManager
+            side = action.lower()  # "BUY" -> "buy", "SELL" -> "sell"
+            order = self.position_manager.place_limit_order(symbol, side, price, amount)
+            
+            if order:
+                logger.info(f"✓ Limit order placed: {action} {amount} {symbol} @ {order['price']}")
+            else:
+                logger.error(f"Failed to place limit order for {symbol}")
+                
         except Exception as e:
             logger.exception(f"Trade execution failed: {e}")
+
 
     def log_status(self):
         uptime = int(time.time() - self.start_time)
@@ -364,18 +362,41 @@ class TradingBot:
         logger.info("Bot is listening...")
         
         counter = 0
+        order_check_counter = 0
+        
         while True:
             # Keep main thread alive
             time.sleep(10)
             
             counter += 1
-            if counter % 6 == 0: # Every ~60s
+            order_check_counter += 1
+            
+            # Check orders every 10s (every iteration)
+            try:
+                # Check pending order status
+                for order_id in list(self.position_manager.pending_orders.keys()):
+                    self.position_manager.check_order_status(order_id)
+                
+                # Cancel expired orders
+                self.position_manager.cancel_expired_orders()
+                
+                # Update P&L for open positions
+                for symbol in self.symbols:
+                    if symbol in self.latest_prices:
+                        self.position_manager.update_position_pnl(symbol, self.latest_prices[symbol])
+                        
+            except Exception as e:
+                logger.error(f"Order monitoring error: {e}")
+            
+            # Status log every ~60s
+            if counter % 6 == 0:
                 self.log_status()
                 # Log a heartbeat to api_logs.txt so user knows it's alive
                 with open("api_logs.txt", "a") as f:
                      price = self.latest_prices.get(self.symbols[0], "N/A")
                      ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                      f.write(f"{ts} [WS UPDATE] Bot is alive | Price: {price}\n")
+
 
 if __name__ == "__main__":
     bot = TradingBot('config.json')
