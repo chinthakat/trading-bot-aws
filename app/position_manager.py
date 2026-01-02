@@ -3,6 +3,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
+from paper_trading import PaperTradingSimulator
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +16,10 @@ class PositionManager:
     - P&L tracking at account and trade levels
     """
     
-    def __init__(self, exchange, db, config):
+    def __init__(self, exchange, db, config, mode="TEST"):
         self.exchange = exchange
         self.db = db
+        self.mode = mode
         
         # Risk Parameters
         self.max_positions = config.get('max_positions', 1)
@@ -25,11 +27,25 @@ class PositionManager:
         self.order_ttl_seconds = config.get('order_ttl', 300)  # 5 minutes
         self.max_slippage_pct = config.get('max_slippage_pct', 0.5)
         
+        # Mode-specific initialization
+        if mode == "TEST":
+            initial_balance = config.get('test_initial_balance', 10000.0)
+            self.simulator = PaperTradingSimulator(initial_balance)
+            # Use test tables
+            self.positions_table_name = 'test_positions'
+            self.orders_table_name = 'test_orders'
+            logger.info(f"PositionManager in TEST mode with ${initial_balance:,.2f} paper balance")
+        else:  # LIVE
+            self.simulator = None
+            self.positions_table_name = 'positions'
+            self.orders_table_name = 'orders'
+            logger.info(f"PositionManager in LIVE mode - REAL TRADES ENABLED")
+        
         # State
         self.current_position = None
         self.pending_orders = {}  # order_id -> order_data
         
-        logger.info(f"PositionManager initialized: max_positions={self.max_positions}, "
+        logger.info(f"Risk controls: max_positions={self.max_positions}, "
                    f"use_min_quantity={self.use_min_quantity}, order_ttl={self.order_ttl_seconds}s")
     
     def can_open_position(self, symbol: str) -> bool:

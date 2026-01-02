@@ -24,6 +24,11 @@ class DynamoManager:
         # Position Management tables
         self.positions_table = self.dynamodb.Table(self.table_names.get('positions', 'positions'))
         self.orders_table = self.dynamodb.Table(self.table_names.get('orders', 'orders'))
+        
+        # Paper Trading (TEST mode) tables
+        self.test_positions_table = self.dynamodb.Table(self.table_names.get('test_positions', 'test_positions'))
+        self.test_orders_table = self.dynamodb.Table(self.table_names.get('test_orders', 'test_orders'))
+        self.test_account_table = self.dynamodb.Table(self.table_names.get('test_account', 'test_account'))
 
     def log_trade(self, trade_data):
         """
