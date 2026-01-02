@@ -132,10 +132,13 @@ class DynamoManager:
             from boto3.dynamodb.conditions import Key
             response = self.prices_table.query(
                 KeyConditionExpression=Key('symbol').eq(symbol),
-                ScanIndexForward=True, # Ascending time (older first)
+                ScanIndexForward=False, # Descending time (newest first)
                 Limit=limit
             )
-            return response.get('Items', [])
+            items = response.get('Items', [])
+            # Reverse to return in Ascending order (oldest -> newest) for plotting
+            items.reverse()
+            return items
         except ClientError as e:
             print(f"Error fetching prices for {symbol}: {e}")
             return []
