@@ -244,6 +244,7 @@ if items:
     # === Trade Event Markers ===
     mode = config['trading'].get('mode', 'TEST')
     
+    
     # Determine which tables to query based on mode
     if mode == "TEST":
         positions_table = db.test_positions_table
@@ -253,25 +254,40 @@ if items:
         orders_table = db.orders_table
     
     try:
+        # Calculate cutoff time from oldest candle
+        min_ts = df['timestamp'].min()
+        
         # Get positions (entry points)
+        # Use FilterExpression to only get relevant ones if possible, or filter in Python
         position_response = positions_table.scan(
-            FilterExpression='symbol = :sym',
-            ExpressionAttributeValues={':sym': symbol}
+            FilterExpression='symbol = :sym AND entry_time >= :min_ts',
+            ExpressionAttributeValues={
+                ':sym': symbol,
+                ':min_ts': Decimal(str(min_ts))
+            }
         )
         positions = position_response.get('Items', [])
         
         # Get filled orders (trade executions)
         order_response = orders_table.scan(
-            FilterExpression='symbol = :sym AND #st = :filled',
+            FilterExpression='symbol = :sym AND #st = :filled AND filled_at >= :min_ts',
             ExpressionAttributeNames={'#st': 'status'},
-            ExpressionAttributeValues={':sym': symbol, ':filled': 'filled'}
+            ExpressionAttributeValues={
+                ':sym': symbol, 
+                ':filled': 'filled',
+                ':min_ts': Decimal(str(min_ts))
+            }
         )
         filled_orders = order_response.get('Items', [])
         
         # Get signals
         signal_response = db.signals_table.scan(
-            FilterExpression='symbol = :sym',
-            ExpressionAttributeValues={':sym': symbol}
+            FilterExpression='symbol = :sym AND #ts >= :min_ts',
+            ExpressionAttributeNames={'#ts': 'timestamp'},
+            ExpressionAttributeValues={
+                ':sym': symbol,
+                ':min_ts': Decimal(str(min_ts))
+            }
         )
         signals = signal_response.get('Items', [])
         
