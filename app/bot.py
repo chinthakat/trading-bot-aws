@@ -264,6 +264,15 @@ class TradingBot:
                 else:
                     logger.info(f"🔴 SELL SIGNAL: SMA crossed BELOW | Short: {sma_short:.2f}, Long: {sma_long:.2f}")
                 
+                # Log signal to database (for dashboard/chart)
+                self.db.log_signal({
+                    'symbol': symbol,
+                    'signal': signal,
+                    'algo': name,
+                    'price': df.iloc[-1]['close'],
+                    'timestamp': int(time.time() * 1000)
+                })
+                
                 self.execute_trade(symbol, signal, name, df.iloc[-1]['close'])
 
 
