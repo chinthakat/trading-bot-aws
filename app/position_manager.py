@@ -2,6 +2,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timedelta
+from decimal import Decimal
 from typing import Optional, Dict, List
 from paper_trading import PaperTradingSimulator
 
