@@ -70,6 +70,9 @@ if manual_trading_enabled:
                         'options': config['exchange']['options']
                     })
                     
+                    if config['exchange'].get('testnet'):
+                        exchange.set_sandbox_mode(True)
+                    
                     pm = PositionManager(exchange, db, config['trading']['risk_management'], mode)
                     
                     # Calculate size and place order
@@ -87,14 +90,19 @@ if manual_trading_enabled:
                                     'timestamp': int(time.time() * 1000)
                                 })
                                 st.sidebar.success(f"✅ BUY order placed @ ${current_price:.2f}")
+                                st.sidebar.caption(f"Order ID: {order.get('order_id', 'N/A')}")
                             else:
-                                st.sidebar.error("❌ Order failed")
+                                st.sidebar.error("❌ Order placement returned None")
+                        else:
+                            st.sidebar.error("❌ Failed to calculate position size")
                     else:
-                        st.sidebar.warning("⚠️ Cannot open position")
+                        st.sidebar.warning("⚠️ Cannot open position (already have one open)")
                 else:
-                    st.sidebar.error("No price data")
+                    st.sidebar.error("❌ No price data available")
             except Exception as e:
-                st.sidebar.error(f"Error: {e}")
+                st.sidebar.error(f"❌ Error: {str(e)}")
+                import traceback
+                st.sidebar.code(traceback.format_exc())
     
     with col2:
         if st.button("🔴 SELL", use_container_width=True, type="secondary"):
@@ -115,6 +123,9 @@ if manual_trading_enabled:
                         'options': config['exchange']['options']
                     })
                     
+                    if config['exchange'].get('testnet'):
+                        exchange.set_sandbox_mode(True)
+                    
                     pm = PositionManager(exchange, db, config['trading']['risk_management'], mode)
                     
                     if pm.can_open_position(symbol):
@@ -130,14 +141,19 @@ if manual_trading_enabled:
                                     'timestamp': int(time.time() * 1000)
                                 })
                                 st.sidebar.success(f"✅ SELL order placed @ ${current_price:.2f}")
+                                st.sidebar.caption(f"Order ID: {order.get('order_id', 'N/A')}")
                             else:
-                                st.sidebar.error("❌ Order failed")
+                                st.sidebar.error("❌ Order placement returned None")
+                        else:
+                            st.sidebar.error("❌ Failed to calculate position size")
                     else:
-                        st.sidebar.warning("⚠️ Cannot open position")
+                        st.sidebar.warning("⚠️ Cannot open position (already have one open)")
                 else:
-                    st.sidebar.error("No price data")
+                    st.sidebar.error("❌ No price data available")
             except Exception as e:
-                st.sidebar.error(f"Error: {e}")
+                st.sidebar.error(f"❌ Error: {str(e)}")
+                import traceback
+                st.sidebar.code(traceback.format_exc())
     
     st.sidebar.caption("⚠️ Orders use exchange minimum quantity")
 
