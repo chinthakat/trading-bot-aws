@@ -113,29 +113,49 @@ class TradingBot:
 
     def start_websocket(self):
         logger.info(f"Starting WebSocket Client ({self.interval})...")
+        
+        # Local callback to ensure reliable execution (Closure)
+        def handle_message(_, message):
+            try:
+                payload = json.loads(message)
+                
+                # Handle Combined Stream Format (is_combined=True)
+                if 'data' in payload:
+                    data = payload['data']
+                else:
+                    data = payload
+
+                if 'e' in data and data['e'] == 'kline':
+                    self.process_kline(data)
+            except Exception as e:
+                logger.error(f"WS Message Error: {e}")
+
         self.ws_client = SpotWebsocketStreamClient(
-            stream_url=self.ws_base_url,
-            on_message=self.on_message,
+            stream_url="wss://stream.binance.com:9443",
+            on_message=handle_message,
             on_error=self.on_error,
             on_close=self.on_close,
             is_combined=True
         )
         
-        # Subscribe to Kline streams
+        # Subscribe to Kline streams from Config
         streams = [f"{symbol.replace('/', '').lower()}@kline_{self.interval}" for symbol in self.symbols]
         self.ws_client.subscribe(stream=streams)
         logger.info(f"Subscribed to: {streams}")
 
+    # on_message method is no longer used directly by WS client, 
+    # but kept if needed for reference or manual calls.
     def on_message(self, _, message):
-        try:
-            data = json.loads(message)
-            if 'e' in data and data['e'] == 'kline':
-                self.process_kline(data)
-        except Exception as e:
-            logger.error(f"WS Message Error: {e}")
+        pass
 
     def on_error(self, _, error):
         logger.error(f"WebSocket Error: {error}")
+
+    def on_error(self, _, error):
+        with open("/home/ec2-user/trading-bot/ws_debug.log", "a") as f:
+            f.write(f"{datetime.now()} WS ERROR: {error}\n")
+        logger.error(f"WebSocket Error: {error}")
+
 
     def on_close(self, _, *args):
         logger.warning("WebSocket Closed. Attempting Reconnect...")
@@ -143,31 +163,35 @@ class TradingBot:
         self.start_websocket()
 
     def process_kline(self, data):
-        # Extract Candle Data
-        k = data['k']
-        symbol = data['s'] # e.g. BTCUSDT (Need to map back to BTC/USDT if necessary, but config symbols are BTC/USDT)
-        
-        # Map raw symbol data 's' (BTCUSDT) to config symbol (BTC/USDT)
-        # Simple lookup:
-        target_symbol = None
-        for s in self.symbols:
-            if s.replace('/', '') == symbol:
-                target_symbol = s
-                break
-        
-        if not target_symbol:
-            return
+        try:
+            # Extract Candle Data
+            k = data['k']
+            symbol = data['s'] 
+            
+            with open("ws_debug.log", "a") as f:
+                f.write(f"{datetime.now()} KLINE: {symbol} Price:{k['c']} IsClosed:{k['x']}\n")
 
-        is_closed = k['x'] # boolean
-        close_price = float(k['c'])
-        
-        self.latest_prices[target_symbol] = close_price
-        
-        # logic: We only really commit to memory and run strategies on CLOSE of a candle
-        # to mimic standard technical analysis.
-        if is_closed:
+            # Map raw symbol data 's' (BTCUSDT) to config symbol (BTC/USDT)
+            target_symbol = None
+            for s in self.symbols:
+                # DEBUG MAPPING
+                if s.replace('/', '') == symbol:
+                    target_symbol = s
+                    break
+            
+            if not target_symbol:
+                with open("ws_debug.log", "a") as f:
+                    f.write(f"{datetime.now()} MAPPING FAIL: Got {symbol} but have {self.symbols}\n")
+                return
+
+            is_closed = k['x'] # boolean
+            close_price = float(k['c'])
+            
+            self.latest_prices[target_symbol] = close_price
+            
+            # Construct candle object
             candle = {
-                'timestamp': k['t'], # Open time (ms)
+                'timestamp': k['t'], 
                 'open': float(k['o']),
                 'high': float(k['h']),
                 'low': float(k['l']),
@@ -176,12 +200,22 @@ class TradingBot:
                 'symbol': target_symbol
             }
             
+            # REAL-TIME PERSISTENCE
+            self.db.log_candle(candle)
+        except Exception as e:
+            with open("ws_debug.log", "a") as f:
+                f.write(f"{datetime.now()} PROCESS ERROR: {e}\n")
+            logger.error(f"Real-time persist error: {e}")
+        
+        # logic: We only really commit to memory and run strategies on CLOSE of a candle
+        # to mimic standard technical analysis.
+        if is_closed:
             # 1. Update Memory
             self.candles[target_symbol].append(candle)
             
-            # 2. Run Strategy
+            # 2. Run Strategy (Calculates indicators + Re-logs full candle)
             self.run_strategy(target_symbol)
-        
+
     def run_strategy(self, symbol):
         if len(self.candles[symbol]) < 50: # Minimum warmup
             return
@@ -196,7 +230,7 @@ class TradingBot:
                 logger.info(f"Signal {signal} for {symbol} from {name}")
                 self.execute_trade(symbol, signal, name, df.iloc[-1]['close'])
 
-        # Log Full Candle + Indicators to DB
+        # Log Full Candle + Indicators to DB (Overwrites the raw real-time candle)
         last_row = df.iloc[-1].to_dict()
         self.db.log_candle(last_row)
         
