@@ -119,13 +119,81 @@ if items:
             line=dict(color=color, width=1),
             name=col.upper()
         ))
+    
+    # === Trade Event Markers ===
+    mode = config['trading'].get('mode', 'TEST')
+    
+    # Determine which tables to query based on mode
+    if mode == "TEST":
+        positions_table = db.test_positions_table
+        orders_table = db.test_orders_table
+    else:
+        positions_table = db.positions_table
+        orders_table = db.orders_table
+    
+    try:
+        # Get positions (entry points)
+        position_response = positions_table.scan(
+            FilterExpression='symbol = :sym',
+            ExpressionAttributeValues={':sym': symbol}
+        )
+        positions = position_response.get('Items', [])
+        
+        # Get filled orders (trade executions)
+        order_response = orders_table.scan(
+            FilterExpression='symbol = :sym AND #st = :filled',
+            ExpressionAttributeNames={'#st': 'status'},
+            ExpressionAttributeValues={':sym': symbol, ':filled': 'filled'}
+        )
+        filled_orders = order_response.get('Items', [])
+        
+        # Plot Position Entry Markers (🔵 BUY, 🔴 SELL)
+        for pos in positions:
+            entry_time = pd.to_datetime(int(pos['entry_time']), unit='ms')
+            entry_price = float(pos['entry_price'])
+            side = pos['side']
+            
+            marker_color = 'green' if side == 'long' else 'red'
+            marker_symbol = 'triangle-up' if side == 'long' else 'triangle-down'
+            
+            fig.add_trace(go.Scatter(
+                x=[entry_time],
+                y=[entry_price],
+                mode='markers',
+                marker=dict(size=15, color=marker_color, symbol=marker_symbol, line=dict(width=2, color='white')),
+                name=f'Position {side.upper()}',
+                showlegend=True,
+                hovertemplate=f'<b>{side.upper()} Position</b><br>Price: ${entry_price:.2f}<br>Time: {entry_time}<extra></extra>'
+            ))
+        
+        # Plot Order Fill Markers (smaller diamonds)
+        for order in filled_orders:
+            if 'filled_at' in order and order['filled_at']:
+                fill_time = pd.to_datetime(int(order['filled_at']), unit='ms')
+                fill_price = float(order.get('price', 0))
+                side = order['side']
+                
+                marker_color = 'lightgreen' if side == 'buy' else 'lightcoral'
+                
+                fig.add_trace(go.Scatter(
+                    x=[fill_time],
+                    y=[fill_price],
+                    mode='markers',
+                    marker=dict(size=10, color=marker_color, symbol='diamond', line=dict(width=1, color='gray')),
+                    name=f'Fill {side.upper()}',
+                    showlegend=True,
+                    hovertemplate=f'<b>{side.upper()} Fill</b><br>Price: ${fill_price:.2f}<br>Time: {fill_time}<extra></extra>'
+                ))
+                
+    except Exception as e:
+        st.caption(f"⚠️ Could not load trade markers: {e}")
 
     fig.update_layout(
-        title=f"{symbol} Real-Time Bot Stream",
+        title=f"{symbol} Real-Time Bot Stream [{mode} Mode]",
         yaxis_title="Price (USDT)",
         xaxis_rangeslider_visible=False,
         height=700,
-        template="plotly_white" # Easier to read candles
+        template="plotly_white" # Easier to read candles 
     )
 
     st.plotly_chart(fig, use_container_width=True)
