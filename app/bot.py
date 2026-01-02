@@ -253,8 +253,18 @@ class TradingBot:
             signal = strategy.calculate(df) # This adds indicator columns to df
             
             if signal:
-                logger.info(f"Signal {signal} for {symbol} from {name}")
+                # Log signal with SMA values (only on candle close!)
+                last_row = df.iloc[-1]
+                sma_short = last_row.get('sma_short', 'N/A')
+                sma_long = last_row.get('sma_long', 'N/A')
+                
+                if signal == 'BUY':
+                    logger.info(f"🟢 BUY SIGNAL: SMA crossed ABOVE | Short: {sma_short:.2f}, Long: {sma_long:.2f}")
+                else:
+                    logger.info(f"🔴 SELL SIGNAL: SMA crossed BELOW | Short: {sma_short:.2f}, Long: {sma_long:.2f}")
+                
                 self.execute_trade(symbol, signal, name, df.iloc[-1]['close'])
+
 
         # Log Full Candle + Indicators to DB (Overwrites the raw real-time candle)
         last_row = df.iloc[-1].to_dict()
