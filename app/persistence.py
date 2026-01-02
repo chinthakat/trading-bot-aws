@@ -59,6 +59,7 @@ class DynamoManager:
         try:
             # Convert any Decimal/float values
             item = {
+                'signal_id': str(uuid.uuid4()),  # Primary key
                 'symbol': signal_data['symbol'],
                 'signal': signal_data['signal'],
                 'algo': signal_data.get('algo', 'UNKNOWN'),
