@@ -291,62 +291,82 @@ if items:
         )
         signals = signal_response.get('Items', [])
         
-        # Plot Signal Markers (stars/crosses)
+        # Prepare data containers
+        signal_buy_x, signal_buy_y, signal_buy_hover = [], [], []
+        signal_sell_x, signal_sell_y, signal_sell_hover = [], [], []
+        
+        pos_long_x, pos_long_y, pos_long_hover = [], [], []
+        pos_short_x, pos_short_y, pos_short_hover = [], [], []
+        
+        fill_buy_x, fill_buy_y, fill_buy_hover = [], [], []
+        fill_sell_x, fill_sell_y, fill_sell_hover = [], [], []
+
+        # Process Signals
         for signal in signals:
-            signal_time = pd.to_datetime(int(signal['timestamp']), unit='ms')
-            signal_price = float(signal['price'])
-            signal_type = signal['signal']
+            t = pd.to_datetime(int(signal['timestamp']), unit='ms')
+            p = float(signal['price'])
+            h = f'<b>{signal["signal"]} SIGNAL</b><br>Price: ${p:.2f}<br>Time: {t}<br>Algo: {signal.get("algo", "N/A")}<extra></extra>'
             
-            marker_color = 'blue' if signal_type == 'BUY' else 'orange'
-            marker_symbol = 'star' if signal_type == 'BUY' else 'x'
-            
-            fig.add_trace(go.Scatter(
-                x=[signal_time],
-                y=[signal_price],
-                mode='markers',
-                marker=dict(size=12, color=marker_color, symbol=marker_symbol, line=dict(width=1, color='darkblue' if signal_type == 'BUY' else 'darkorange')),
-                name=f'Signal {signal_type}',
-                showlegend=True,
-                hovertemplate=f'<b>{signal_type} SIGNAL</b><br>Price: ${signal_price:.2f}<br>Time: {signal_time}<br>Algo: {signal.get("algo", "N/A")}<extra></extra>'
-            ))
-        
-        # Plot Position Entry Markers (🔵 BUY, 🔴 SELL)
+            if signal['signal'] == 'BUY':
+                signal_buy_x.append(t)
+                signal_buy_y.append(p)
+                signal_buy_hover.append(h)
+            else:
+                signal_sell_x.append(t)
+                signal_sell_y.append(p)
+                signal_sell_hover.append(h)
+
+        # Process Positions
         for pos in positions:
-            entry_time = pd.to_datetime(int(pos['entry_time']), unit='ms')
-            entry_price = float(pos['entry_price'])
-            side = pos['side']
+            t = pd.to_datetime(int(pos['entry_time']), unit='ms')
+            p = float(pos['entry_price'])
+            side = pos['side'].upper()
+            h = f'<b>{side} Position</b><br>Price: ${p:.2f}<br>Time: {t}<extra></extra>'
             
-            marker_color = 'green' if side == 'long' else 'red'
-            marker_symbol = 'triangle-up' if side == 'long' else 'triangle-down'
-            
-            fig.add_trace(go.Scatter(
-                x=[entry_time],
-                y=[entry_price],
-                mode='markers',
-                marker=dict(size=15, color=marker_color, symbol=marker_symbol, line=dict(width=2, color='white')),
-                name=f'Position {side.upper()}',
-                showlegend=True,
-                hovertemplate=f'<b>{side.upper()} Position</b><br>Price: ${entry_price:.2f}<br>Time: {entry_time}<extra></extra>'
-            ))
-        
-        # Plot Order Fill Markers (smaller diamonds)
+            if pos['side'] == 'long':
+                pos_long_x.append(t)
+                pos_long_y.append(p)
+                pos_long_hover.append(h)
+            else:
+                pos_short_x.append(t)
+                pos_short_y.append(p)
+                pos_short_hover.append(h)
+
+        # Process Fills
         for order in filled_orders:
             if 'filled_at' in order and order['filled_at']:
-                fill_time = pd.to_datetime(int(order['filled_at']), unit='ms')
-                fill_price = float(order.get('price', 0))
-                side = order['side']
+                t = pd.to_datetime(int(order['filled_at']), unit='ms')
+                p = float(order.get('price', 0))
+                side = order['side'].upper()
+                h = f'<b>{side} Fill</b><br>Price: ${p:.2f}<br>Time: {t}<extra></extra>'
                 
-                marker_color = 'lightgreen' if side == 'buy' else 'lightcoral'
-                
+                if order['side'] == 'buy':
+                    fill_buy_x.append(t)
+                    fill_buy_y.append(p)
+                    fill_buy_hover.append(h)
+                else:
+                    fill_sell_x.append(t)
+                    fill_sell_y.append(p)
+                    fill_sell_hover.append(h)
+
+        # Helper to add trace
+        def add_marker_trace(x, y, hover, name, color, symbol, size=12):
+            if x:
                 fig.add_trace(go.Scatter(
-                    x=[fill_time],
-                    y=[fill_price],
-                    mode='markers',
-                    marker=dict(size=10, color=marker_color, symbol='diamond', line=dict(width=1, color='gray')),
-                    name=f'Fill {side.upper()}',
-                    showlegend=True,
-                    hovertemplate=f'<b>{side.upper()} Fill</b><br>Price: ${fill_price:.2f}<br>Time: {fill_time}<extra></extra>'
+                    x=x, y=y, mode='markers',
+                    marker=dict(size=size, color=color, symbol=symbol, line=dict(width=1, color='black')),
+                    name=name, showlegend=True, hovertemplate=hover, hoverinfo='text'
                 ))
+
+        # Add Traces
+        add_marker_trace(signal_buy_x, signal_buy_y, signal_buy_hover, 'Signal BUY', 'blue', 'star', 12)
+        add_marker_trace(signal_sell_x, signal_sell_y, signal_sell_hover, 'Signal SELL', 'orange', 'x', 12)
+        
+        add_marker_trace(pos_long_x, pos_long_y, pos_long_hover, 'Position LONG', 'green', 'triangle-up', 15)
+        add_marker_trace(pos_short_x, pos_short_y, pos_short_hover, 'Position SHORT', 'red', 'triangle-down', 15)
+        
+        add_marker_trace(fill_buy_x, fill_buy_y, fill_buy_hover, 'Fill BUY', 'lightgreen', 'diamond', 10)
+        add_marker_trace(fill_sell_x, fill_sell_y, fill_sell_hover, 'Fill SELL', 'lightcoral', 'diamond', 10)
                 
     except Exception as e:
         st.caption(f"⚠️ Could not load trade markers: {e}")
