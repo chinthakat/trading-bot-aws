@@ -151,35 +151,100 @@ class PositionManager:
             logger.error(f"Failed to place limit order for {symbol}: {e}")
             return None
     
-    def check_order_status(self, order_id: str) -> Optional[Dict]:
+    def check_order_status(self, order_id: str, current_price: float = None) -> Optional[Dict]:
         """Check if an order has been filled."""
         try:
-            order = self.exchange.fetch_order(order_id)
-            
-            if order['status'] == 'closed':
-                # Order filled!
-                logger.info(f"Order {order_id} filled at {order['average']}")
+            if self.mode == "TEST":
+                if not current_price:
+                    return None
+                    
+                # Simulate fill
+                filled = self.simulator.simulate_fill(order_id, current_price)
                 
-                # Update pending orders
-                if order_id in self.pending_orders:
-                    order_data = self.pending_orders.pop(order_id)
-                    order_data['status'] = 'filled'
-                    order_data['filled_at'] = datetime.now()
+                if filled:
+                    # Retrieve filled order from simulator
+                    # It sits in filled_orders list, manual search needed or better lookup?
+                    # Simulator moves it to self.filled_orders and deletes from pending
+                    # We can find it in self.simulator.filled_orders
+                    filled_order = None
+                    for o in self.simulator.filled_orders:
+                        if o['order_id'] == order_id:
+                            filled_order = o
+                            break
                     
-                    # Update database
-                    self.db.update_order(order_data)
+                    if filled_order:
+                        logger.info(f"[TEST] Order {order_id} filled at {filled_order['fill_price']}")
+                        
+                        # Update pending orders (remove from local pending)
+                        if order_id in self.pending_orders:
+                            self.pending_orders.pop(order_id)
+                        
+                        # Update DB: test_orders
+                        try:
+                            # Convert datetimes
+                            order_log = filled_order.copy()
+                            order_log['created_at'] = int(order_log['created_at'].timestamp() * 1000)
+                            if 'filled_at' in order_log:
+                                order_log['filled_at'] = int(order_log['filled_at'].timestamp() * 1000)
+                            if 'expires_at' in order_log:
+                                order_log['expires_at'] = int(order_log['expires_at'].timestamp() * 1000)
+                            
+                            self.db.test_orders_table.put_item(Item=order_log)
+                        except Exception as e:
+                            logger.error(f"Failed to persist filled test order: {e}")
+
+                        # Update DB: test_positions
+                        # Find the position for this symbol
+                        symbol = filled_order['symbol']
+                        position = self.simulator.get_position(symbol)
+                        
+                        if position:
+                            try:
+                                pos_log = position.copy()
+                                pos_log['entry_time'] = int(pos_log['entry_time'].timestamp() * 1000)
+                                if 'exit_time' in pos_log and pos_log['exit_time']:
+                                    pos_log['exit_time'] = int(pos_log['exit_time'].timestamp() * 1000)
+                                
+                                # Convert floats to Decimal
+                                for k, v in pos_log.items():
+                                    if isinstance(v, float):
+                                        pos_log[k] = Decimal(str(v))
+                                
+                                self.db.test_positions_table.put_item(Item=pos_log)
+                                logger.info(f"[TEST] Position persisted for {symbol}")
+                            except Exception as e:
+                                logger.error(f"Failed to persist test position: {e}")
+
+                        return filled_order
+                return None
+
+            else:  # LIVE MODE
+                order = self.exchange.fetch_order(order_id)
+                
+                if order['status'] == 'closed':
+                    # Order filled!
+                    logger.info(f"Order {order_id} filled at {order['average']}")
                     
-                    # Create position
-                    self._create_position_from_order(order_data, order)
+                    # Update pending orders
+                    if order_id in self.pending_orders:
+                        order_data = self.pending_orders.pop(order_id)
+                        order_data['status'] = 'filled'
+                        order_data['filled_at'] = datetime.now()
+                        
+                        # Update database
+                        self.db.update_order(order_data)
+                        
+                        # Create position
+                        self._create_position_from_order(order_data, order)
+                        
+                    return order
                     
+                elif order['status'] == 'canceled':
+                    logger.info(f"Order {order_id} was canceled")
+                    if order_id in self.pending_orders:
+                        self.pending_orders.pop(order_id)
+                        
                 return order
-                
-            elif order['status'] == 'canceled':
-                logger.info(f"Order {order_id} was canceled")
-                if order_id in self.pending_orders:
-                    self.pending_orders.pop(order_id)
-                    
-            return order
             
         except Exception as e:
             logger.error(f"Error checking order {order_id}: {e}")
