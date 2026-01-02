@@ -20,6 +20,10 @@ class DynamoManager:
         self.stats_table = self.dynamodb.Table(self.table_names['stats'])
         self.prices_table = self.dynamodb.Table(self.table_names['prices'])
         self.signals_table = self.dynamodb.Table(self.table_names['signals'])
+        
+        # Position Management tables
+        self.positions_table = self.dynamodb.Table(self.table_names.get('positions', 'positions'))
+        self.orders_table = self.dynamodb.Table(self.table_names.get('orders', 'orders'))
 
     def log_trade(self, trade_data):
         """
@@ -140,5 +144,131 @@ class DynamoManager:
             items.reverse()
             return items
         except ClientError as e:
-            print(f"Error fetching prices for {symbol}: {e}")
+            print(f"Error fetching price history: {e}")
             return []
+    
+    # === Position Management Methods ===
+    
+    def log_position(self, position_data):
+        """Log a new position to DynamoDB."""
+        try:
+            item = {
+                'position_id': position_data['position_id'],
+                'symbol': position_data['symbol'],
+                'side': position_data['side'],
+                'entry_price': Decimal(str(position_data['entry_price'])),
+                'quantity': Decimal(str(position_data['quantity'])),
+                'entry_time': int(position_data['entry_time'].timestamp() * 1000),
+                'status': position_data['status'],
+                'pnl': Decimal(str(position_data.get('pnl', 0)))
+            }
+            self.positions_table.put_item(Item=item)
+            print(f"Logged position: {item['position_id']}")
+        except ClientError as e:
+            print(f"Error logging position: {e}")
+    
+    def update_position_pnl(self, position_id, pnl, current_price):
+        """Update P&L for an open position."""
+        try:
+            self.positions_table.update_item(
+                Key={'position_id': position_id},
+                UpdateExpression='SET pnl = :pnl, current_price = :price',
+                ExpressionAttributeValues={
+                    ':pnl': Decimal(str(pnl)),
+                    ':price': Decimal(str(current_price))
+                }
+            )
+        except ClientError as e:
+            print(f"Error updating position P&L: {e}")
+    
+    def close_position(self, position_id, exit_price, exit_time, final_pnl):
+        """Mark a position as closed."""
+        try:
+            self.positions_table.update_item(
+                Key={'position_id': position_id},
+                UpdateExpression='SET #status = :status, exit_price = :exit_price, exit_time = :exit_time, pnl = :pnl',
+                ExpressionAttributeNames={'#status': 'status'},
+                ExpressionAttributeValues={
+                    ':status': 'closed',
+                    ':exit_price': Decimal(str(exit_price)),
+                    ':exit_time': int(exit_time.timestamp() * 1000),
+                    ':pnl': Decimal(str(final_pnl))
+                }
+            )
+            print(f"Closed position: {position_id} with P&L: {final_pnl}")
+        except ClientError as e:
+            print(f"Error closing position: {e}")
+    
+    def log_order(self, order_data):
+        """Log a new order to DynamoDB."""
+        try:
+            item = {
+                'order_id': order_data['order_id'],
+                'symbol': order_data['symbol'],
+                'side': order_data['side'],
+                'price': Decimal(str(order_data['price'])),
+                'amount': Decimal(str(order_data['amount'])),
+                'status': order_data['status'],
+                'created_at': int(order_data['created_at'].timestamp() * 1000),
+                'expires_at': int(order_data['expires_at'].timestamp() * 1000)
+            }
+            self.orders_table.put_item(Item=item)
+            print(f"Logged order: {item['order_id']}")
+        except ClientError as e:
+            print(f"Error logging order: {e}")
+    
+    def update_order(self, order_data):
+        """Update an order status."""
+        try:
+            update_expr = 'SET #status = :status'
+            expr_values = {':status': order_data['status']}
+            
+            if 'filled_at' in order_data and order_data['filled_at']:
+                update_expr += ', filled_at = :filled_at'
+                expr_values[':filled_at'] = int(order_data['filled_at'].timestamp() * 1000)
+            
+            self.orders_table.update_item(
+                Key={'order_id': order_data['order_id']},
+                UpdateExpression=update_expr,
+                ExpressionAttributeNames={'#status': 'status'},
+                ExpressionAttributeValues=expr_values
+            )
+        except ClientError as e:
+            print(f"Error updating order: {e}")
+    
+    def get_account_pnl(self):
+        """Get account-level P&L statistics."""
+        try:
+            response = self.positions_table.scan()
+            positions = response.get('Items', [])
+            
+            total_pnl = 0
+            open_pnl = 0
+            closed_pnl = 0
+            win_count = 0
+            loss_count = 0
+            
+            for pos in positions:
+                pnl = float(pos.get('pnl', 0))
+                total_pnl += pnl
+                
+                if pos['status'] == 'open':
+                    open_pnl += pnl
+                else:
+                    closed_pnl += pnl
+                    if pnl > 0:
+                        win_count += 1
+                    elif pnl < 0:
+                        loss_count += 1
+            
+            return {
+                'total_pnl': total_pnl,
+                'open_pnl': open_pnl,
+                'closed_pnl': closed_pnl,
+                'win_count': win_count,
+                'loss_count': loss_count,
+                'win_rate': win_count / (win_count + loss_count) if (win_count + loss_count) > 0 else 0
+            }
+        except ClientError as e:
+            print(f"Error getting account P&L: {e}")
+            return {'total_pnl': 0, 'open_pnl': 0, 'closed_pnl': 0, 'win_count': 0, 'loss_count': 0, 'win_rate': 0}
