@@ -286,7 +286,29 @@ class TradingBot:
     def execute_trade(self, symbol, action, algo, price):
         """Execute trade using PositionManager with limit orders."""
         try:
-            # Check if we can open a position
+            # Rule 2 & 4: Check existing position interactions
+            if self.position_manager.current_position:
+                pos = self.position_manager.current_position
+                # Normalize sides: 'BUY'->'long', 'SELL'->'short'
+                action_side = 'long' if action.lower() == 'buy' else 'short'
+                
+                # Rule 4: If same side, ignore
+                if pos['side'] == action_side:
+                    logger.info(f"Ignoring {action} signal for {symbol}: Already in {pos['side']} position")
+                    return
+                
+                # Rule 3: If opposite side, Close and Reverse
+                if pos['side'] != action_side:
+                    logger.info(f"Opposite signal detected ({action} vs {pos['side']}). Closing current position...")
+                    self.position_manager.close_position(price)
+                    
+                    # Note on Rule 3 (Create new position): 
+                    # With Limit Orders, we cannot guarantee immediate fill of the close/flip.
+                    # Opening a new position immediately would violate Rule 2 (Single Position) by having 2 active "pending" logic paths.
+                    # We prioritize closing. The system will be ready for the NEXT entry once this closes.
+                    return
+
+            # Check if we can open a position (Rule 2)
             if not self.position_manager.can_open_position(symbol):
                 logger.info(f"Cannot execute {action} for {symbol}: position limit reached")
                 return
@@ -297,8 +319,8 @@ class TradingBot:
                 logger.error(f"Failed to calculate position size for {symbol}")
                 return
             
-            # Dry run check
-            if not self.exchange.apiKey:
+            # Dry run check (Skip for TEST mode)
+            if self.position_manager.mode != "TEST" and not self.exchange.apiKey:
                 logger.warning(f"No API Keys - Dry Run: Would place {action} limit order for {symbol}")
                 return
             

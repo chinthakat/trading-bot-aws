@@ -6,6 +6,7 @@ import os
 import sys
 import json
 from decimal import Decimal
+from datetime import datetime
 
 # Add app directory to path to import persistence
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -17,7 +18,71 @@ st.set_page_config(
     layout="wide"
 )
 
+
 st.title("🕯️ Live Bot Candles (1m)")
+
+# === Bot Status Indicator ===
+def get_bot_status():
+    try:
+        log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'api_logs.txt')
+        if not os.path.exists(log_path):
+            return "🔴", "Offline (No logs)", "red"
+        
+        # Read last line efficiently
+        with open(log_path, 'rb') as f:
+            try:
+                f.seek(-1024, os.SEEK_END)
+            except OSError:
+                pass # File smaller than 1024 bytes
+            last_lines = f.readlines()
+            
+        if not last_lines:
+             return "🔴", "Offline (Empty logs)", "red"
+             
+        # Find last line with timestamp
+        # Iterate backwards to find a valid line
+        last_valid_line = None
+        for line in reversed(last_lines):
+            decoded = line.decode('utf-8', errors='ignore').strip()
+            if "[WS UPDATE]" in decoded:
+                last_valid_line = decoded
+                break
+        
+        if not last_valid_line:
+            # Fallback to just last line if we can't find tag
+             last_valid_line = last_lines[-1].decode('utf-8', errors='ignore').strip()
+
+        # Format: 2026-01-03 01:10:05 [WS UPDATE] ...
+        # Or standard log: 2026-01-03 ... [INFO] ...
+        # Both start with timestamp YYYY-MM-DD HH:MM:SS
+        parts = last_valid_line.split(' [')
+        if len(parts) > 0:
+            ts_str = parts[0].strip()
+            # Try parsing
+            try:
+                # Handle potential millisecond formatting if present, though bot.py uses %Y-%m-%d %H:%M:%S
+                ts_str = ts_str.split(',')[0] # Remove milliseconds if typical logging
+                last_active = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                
+                diff = (datetime.now() - last_active).total_seconds()
+                
+                if diff < 120: # 2 mins
+                    return "🟢", f"Online (Last beat: {int(diff)}s ago)", "green"
+                elif diff < 300: # 5 mins
+                    return "🟠", f"Lagging (Last beat: {int(diff)}s ago)", "orange"
+                else:
+                    return "🔴", f"Offline (Last beat: {int(diff)}s ago)", "red"
+            except Exception as e:
+                # Fallback if parse fails
+                return "⚪", f"Unknown (Parse Error: {e})", "gray"
+        return "⚪", "Unknown", "gray"
+            
+    except Exception as e:
+        return "🔴", f"Error check: {e}", "red"
+
+icon, msg, color = get_bot_status()
+st.markdown(f"**Status:** {icon} <span style='color:{color}'>{msg}</span>", unsafe_allow_html=True)
+
 
 # Load Config
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'config.json')
@@ -156,6 +221,65 @@ if manual_trading_enabled:
                 st.sidebar.code(traceback.format_exc())
     
     st.sidebar.caption("⚠️ Orders use exchange minimum quantity")
+
+
+# === Active Stats Display ===
+st.markdown("### 📊 Active Status")
+stats_col1, stats_col2, stats_col3, stats_col4 = st.columns(4)
+
+# 1. Active Position
+active_pos = db.get_active_position(mode)
+if active_pos and active_pos['symbol'] == symbol:
+    side = active_pos['side'].upper()
+    entry = float(active_pos['entry_price'])
+    qty = float(active_pos['quantity'])
+    pnl = float(active_pos.get('pnl', 0))
+    
+    # Calculate current PnL if we have price
+    # We fetch candle data later, but we can do a quick check here or wait?
+    # Let's just use what's in DB or wait for the chart data? 
+    # DB might be stale if bot updates slowly.
+    # Let's display what we have.
+    
+    color = "normal"
+    if pnl > 0: color = "off" # Streamlit metric delta handles color
+    
+    with stats_col1:
+        st.metric("Active Position", f"{side} {qty}", delta=f"{pnl:.2f} USDT", delta_color="normal")
+    with stats_col2:
+        st.metric("Entry Price", f"{entry:.2f}")
+else:
+    with stats_col1:
+        st.metric("Active Position", "None")
+    with stats_col2:
+        st.metric("PnL", "0.00")
+
+# 2. Pending Orders
+# Scan for pending orders for this symbol
+if mode == "TEST":
+    o_table = db.test_orders_table
+else:
+    o_table = db.orders_table
+
+try:
+    resp = o_table.scan(
+        FilterExpression='symbol = :sym AND #st = :pending',
+        ExpressionAttributeNames={'#st': 'status'},
+        ExpressionAttributeValues={':sym': symbol, ':pending': 'pending'}
+    )
+    pending_orders = resp.get('Items', [])
+    buy_orders = [o for o in pending_orders if o['side'] == 'buy']
+    sell_orders = [o for o in pending_orders if o['side'] == 'sell']
+    
+    with stats_col3:
+        st.metric("Pending Buys", f"{len(buy_orders)}")
+    with stats_col4:
+        st.metric("Pending Sells", f"{len(sell_orders)}")
+
+except Exception as e:
+    st.error(f"Error fetching orders: {e}")
+
+st.divider()
 
 
 # Helper to fetch data

@@ -43,7 +43,10 @@ class PositionManager:
             logger.info(f"PositionManager in LIVE mode - REAL TRADES ENABLED")
         
         # State
-        self.current_position = None
+        self.current_position = self.db.get_active_position(self.mode)
+        if self.current_position:
+            logger.info(f"Restored active position from DB: {self.current_position['symbol']} ({self.current_position['status']})")
+        
         self.pending_orders = {}  # order_id -> order_data
         
         logger.info(f"Risk controls: max_positions={self.max_positions}, "
@@ -86,7 +89,7 @@ class PositionManager:
             logger.error(f"Error calculating position size for {symbol}: {e}")
             return None
     
-    def place_limit_order(self, symbol: str, side: str, current_price: float, amount: float) -> Optional[Dict]:
+    def place_limit_order(self, symbol: str, side: str, current_price: float, amount: float, order_type: str = 'entry') -> Optional[Dict]:
         """
         Place a limit order with slight offset from current price.
         Routes to simulator in TEST mode or real exchange in LIVE mode.
@@ -102,6 +105,7 @@ class PositionManager:
             if self.mode == "TEST":
                 # Paper trading - use simulator
                 order_data = self.simulator.place_limit_order(symbol, side, limit_price, amount)
+                order_data['type'] = order_type # Tag order type
                 self.pending_orders[order_data['order_id']] = order_data
                 
                 # Log to test tables - use appropriate method or direct table access
@@ -125,7 +129,7 @@ class PositionManager:
                 market = self.exchange.market(symbol)
                 limit_price = self.exchange.price_to_precision(symbol, limit_price)
                 
-                logger.info(f"[LIVE] Placing {side} limit order: {symbol} @ {limit_price} qty={amount}")
+                logger.info(f"[LIVE] Placing {side} limit order: {symbol} @ {limit_price} qty={amount} ({order_type})")
                 
                 # Place real order
                 order = self.exchange.create_limit_order(symbol, side, amount, limit_price)
@@ -139,7 +143,8 @@ class PositionManager:
                     'amount': amount,
                     'status': 'pending',
                     'created_at': datetime.now(),
-                    'expires_at': datetime.now() + timedelta(seconds=self.order_ttl_seconds)
+                    'expires_at': datetime.now() + timedelta(seconds=self.order_ttl_seconds),
+                    'type': order_type # Tag
                 }
                 
                 self.pending_orders[order['id']] = order_data
@@ -164,9 +169,6 @@ class PositionManager:
                 
                 if filled:
                     # Retrieve filled order from simulator
-                    # It sits in filled_orders list, manual search needed or better lookup?
-                    # Simulator moves it to self.filled_orders and deletes from pending
-                    # We can find it in self.simulator.filled_orders
                     filled_order = None
                     for o in self.simulator.filled_orders:
                         if o['order_id'] == order_id:
@@ -176,6 +178,10 @@ class PositionManager:
                     if filled_order:
                         logger.info(f"[TEST] Order {order_id} filled at {filled_order['fill_price']}")
                         
+                        # retrieve local tracked order to get type
+                        local_order = self.pending_orders.get(order_id)
+                        order_type = local_order.get('type', 'entry') if local_order else 'entry'
+
                         # Update pending orders (remove from local pending)
                         if order_id in self.pending_orders:
                             self.pending_orders.pop(order_id)
@@ -194,27 +200,58 @@ class PositionManager:
                         except Exception as e:
                             logger.error(f"Failed to persist filled test order: {e}")
 
-                        # Update DB: test_positions
-                        # Find the position for this symbol
-                        symbol = filled_order['symbol']
-                        position = self.simulator.get_position(symbol)
+                        # LOGIC SPLIT: Entry vs Exit
+                        if order_type == 'entry':
+                            # Update DB: test_positions (CREATE)
+                            symbol = filled_order['symbol']
+                            position = self.simulator.get_position(symbol)
+                            if position:
+                                try:
+                                    pos_log = position.copy()
+                                    pos_log['entry_time'] = int(pos_log['entry_time'].timestamp() * 1000)
+                                    if 'exit_time' in pos_log and pos_log['exit_time']:
+                                        pos_log['exit_time'] = int(pos_log['exit_time'].timestamp() * 1000)
+                                    for k, v in pos_log.items():
+                                        if isinstance(v, float):
+                                            pos_log[k] = Decimal(str(v))
+                                    self.db.test_positions_table.put_item(Item=pos_log)
+                                    logger.info(f"[TEST] Position persisted for {symbol}")
+                                    
+                                    # Sync local current_position
+                                    self.current_position = position # Simulator obj needs mapping? 
+                                    # Simulator position is dict, matches our format mostly. 
+                                    # Actually simulator keeps positions in memory. PositionManager should also invoke _create_position_from_order conceptually triggers same thing.
+                                    # In TEST mode, simulator manages positions. We just rely on simulator.get_position.
+                                    # But wait, self.current_position is used by checks. We should sync it.
+                                    self.current_position = position
+
+                                except Exception as e:
+                                    logger.error(f"Failed to persist test position: {e}")
                         
-                        if position:
-                            try:
-                                pos_log = position.copy()
-                                pos_log['entry_time'] = int(pos_log['entry_time'].timestamp() * 1000)
-                                if 'exit_time' in pos_log and pos_log['exit_time']:
-                                    pos_log['exit_time'] = int(pos_log['exit_time'].timestamp() * 1000)
-                                
-                                # Convert floats to Decimal
-                                for k, v in pos_log.items():
-                                    if isinstance(v, float):
-                                        pos_log[k] = Decimal(str(v))
-                                
-                                self.db.test_positions_table.put_item(Item=pos_log)
-                                logger.info(f"[TEST] Position persisted for {symbol}")
-                            except Exception as e:
-                                logger.error(f"Failed to persist test position: {e}")
+                        elif order_type == 'exit':
+                             # CLOSED
+                             logger.info(f"[TEST] Exit order filled. Clearing current position.")
+                             self.current_position = None
+                             # DB update: Simulator updates DB? No, we did above.
+                             # We need to update the CLOSED position in DB.
+                             # Get historic positions from simulator?
+                             # Or just update status.
+                             # Actually simulator moves to closed_positions.
+                             # We should find it and sync.
+                             if self.simulator.closed_positions:
+                                 last_closed = self.simulator.closed_positions[-1]
+                                 if last_closed['symbol'] == filled_order['symbol']:
+                                      # Log closed pos to DB
+                                      try:
+                                          pos_log = last_closed.copy()
+                                          pos_log['entry_time'] = int(pos_log['entry_time'].timestamp() * 1000)
+                                          pos_log['exit_time'] = int(pos_log['exit_time'].timestamp() * 1000)
+                                          for k, v in pos_log.items():
+                                              if isinstance(v, float): pos_log[k] = Decimal(str(v))
+                                          self.db.test_positions_table.put_item(Item=pos_log)
+                                          logger.info(f"[TEST] Closed position persisted.")
+                                      except Exception as e:
+                                          logger.error(f"Failed persist closed pos: {e}")
 
                         return filled_order
                 return None
@@ -227,16 +264,41 @@ class PositionManager:
                     logger.info(f"Order {order_id} filled at {order['average']}")
                     
                     # Update pending orders
+                    local_order_data = None
                     if order_id in self.pending_orders:
-                        order_data = self.pending_orders.pop(order_id)
-                        order_data['status'] = 'filled'
-                        order_data['filled_at'] = datetime.now()
+                        local_order_data = self.pending_orders.pop(order_id)
+                        local_order_data['status'] = 'filled'
+                        local_order_data['filled_at'] = datetime.now()
                         
                         # Update database
-                        self.db.update_order(order_data)
-                        
+                        self.db.update_order(local_order_data)
+                    
+                    order_type = local_order_data.get('type', 'entry') if local_order_data else 'entry'
+                    
+                    if order_type == 'entry':
                         # Create position
-                        self._create_position_from_order(order_data, order)
+                        self._create_position_from_order(local_order_data, order)
+                    else: # Exit
+                        # Close position logic
+                        logger.info(f"Exit order {order_id} filled. Closing position.")
+                        
+                        if self.current_position:
+                             # Update local state
+                             self.current_position['status'] = 'closed'
+                             self.current_position['exit_price'] = float(order['average'])
+                             self.current_position['exit_time'] = datetime.now()
+                             # Calculate Final PnL
+                             if self.current_position['side'] == 'long':
+                                 pnl = (self.current_position['exit_price'] - self.current_position['entry_price']) * self.current_position['quantity']
+                             else:
+                                 pnl = (self.current_position['entry_price'] - self.current_position['exit_price']) * self.current_position['quantity']
+                             self.current_position['pnl'] = pnl
+                             
+                             # DB Update: Log closed position
+                             self.db.log_position(self.current_position)
+                             
+                             # Reset
+                             self.current_position = None
                         
                     return order
                     
@@ -303,7 +365,7 @@ class PositionManager:
         exit_side = 'sell' if pos['side'] == 'long' else 'buy'
         
         # Place limit order to close
-        order = self.place_limit_order(pos['symbol'], exit_side, current_price, pos['quantity'])
+        order = self.place_limit_order(pos['symbol'], exit_side, current_price, pos['quantity'], order_type='exit')
         
         if order:
             logger.info(f"Closing position {pos['position_id']} with order {order['order_id']}")
@@ -366,10 +428,21 @@ class PositionManager:
                         if order_id not in self.simulator.pending_orders:
                             sim_order = order.copy()
                             # Convert DB types to Py types for Simulator
-                            # Note: Simulator might expect datetime objects
-                            # Created_at in DB is timestamp int. Simulator uses datetime? 
-                            # Checking simulator code: it uses datetime.now() usually.
-                            # Just re-insert.
+                            # DynamoDB returns Decimal for numbers. Simulator expects datetime for created_at.
+                            c_at = order.get('created_at')
+                            if c_at:
+                                # Handle Decimal, int, float, str
+                                if isinstance(c_at, (int, float, str, Decimal)):
+                                    try:
+                                        ts = float(c_at)
+                                        sim_order['created_at'] = datetime.fromtimestamp(ts/1000)
+                                    except:
+                                        sim_order['created_at'] = datetime.now()
+                                else:
+                                    sim_order['created_at'] = datetime.now()
+                            else:
+                                sim_order['created_at'] = datetime.now()
+                            
                             self.simulator.pending_orders[order_id] = sim_order 
                             logger.info(f"[TEST] Injected new dashboard order {order_id}")
                     
