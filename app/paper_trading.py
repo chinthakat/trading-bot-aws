@@ -20,6 +20,7 @@ class PaperTradingSimulator:
         self.positions = {}  # symbol -> position dict
         self.pending_orders = {}  # order_id -> order dict
         self.filled_orders = []
+        self.closed_positions = []
         
         logger.info(f"Paper Trading Simulator initialized with ${initial_balance:,.2f}")
     
@@ -173,6 +174,8 @@ class PaperTradingSimulator:
                     pos['exit_price'] = fill_price
                     pos['exit_time'] = datetime.now()
                     pos['pnl'] = realized_pnl
+                    
+                    self.closed_positions.append(pos)
                     
                     # Remove from active positions
                     del self.positions[symbol]

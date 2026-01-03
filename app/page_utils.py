@@ -203,7 +203,9 @@ def render_orders_table(db, mode):
             # Formatting
             for col in ['created_at', 'filled_at', 'expires_at']:
                 if col in df.columns:
-                    df[col] = pd.to_datetime(df[col].astype(int), unit='ms')
+                    # Safe conversion handling NaNs/Decimals
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+                    df[col] = pd.to_datetime(df[col], unit='ms', errors='coerce')
             for col in ['price', 'amount', 'fill_price']:
                 if col in df.columns:
                     df[col] = df[col].astype(float)

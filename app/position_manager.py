@@ -48,6 +48,40 @@ class PositionManager:
             self.positions_table_name = 'test_positions'
             self.orders_table_name = 'test_orders'
             logger.info(f"PositionManager in TEST mode with ${starting_balance:,.2f} paper balance")
+            
+            # Load EXISTING open positions into Simulator from DB
+            # This handles restarts where DB has positions but memory is fresh
+            try:
+                response = self.db.test_positions_table.scan(
+                    FilterExpression='#st = :open OR #st = :req_close',
+                    ExpressionAttributeNames={'#st': 'status'},
+                    ExpressionAttributeValues={':open': 'open', ':req_close': 'request_close'}
+                )
+                existing_positions = response.get('Items', [])
+                
+                for pos in existing_positions:
+                    # Convert Decimal to float for simulator
+                    sim_pos = {
+                        'position_id': pos['position_id'],
+                        'symbol': pos['symbol'],
+                        'side': pos['side'],
+                        'entry_price': float(pos['entry_price']),
+                        'quantity': float(pos['quantity']),
+                        'status': pos['status'],
+                        # Handle timestamps if needed, simulator uses them for info only mostly
+                        'entry_time': datetime.now() # imprecise but safe
+                    }
+                    if 'entry_time' in pos:
+                        try:
+                            sim_pos['entry_time'] = datetime.fromtimestamp(int(pos['entry_time'])/1000)
+                        except: pass
+                        
+                    self.simulator.positions[pos['symbol']] = sim_pos
+                    logger.info(f"[TEST] Restored position {pos['symbol']} into simulator")
+                    
+            except Exception as e:
+                logger.error(f"Failed to restore positions to simulator: {e}")
+                
         else:  # LIVE
             self.simulator = None
             self.positions_table_name = 'positions'
@@ -420,7 +454,7 @@ class PositionManager:
         if order:
             logger.info(f"Closing position {pos['position_id']} with order {order['order_id']}")
     
-    def close_position_immediate(self, position_id: str, current_price: float, reason: str = 'manual') -> bool:
+    def close_position_immediate(self, position_id: str, current_price: float, reason: str = 'manual', position_data: Dict = None) -> bool:
         """
         Immediately close a position using market-like limit order.
         Used for position flipping.
@@ -429,11 +463,16 @@ class PositionManager:
         try:
             # Find position
             pos = None
-            if self.current_position and self.current_position.get('position_id') == position_id:
+            if position_data:
+                pos = position_data
+            elif self.current_position and self.current_position.get('position_id') == position_id:
                 pos = self.current_position
-            else:
-                # Check in open_positions dict
-                pos = self.open_positions.get(position_id)
+            elif self.mode == "TEST" and self.simulator:
+                # Search simulator positions by ID
+                for sym, p in self.simulator.positions.items():
+                    if p.get('position_id') == position_id:
+                        pos = p
+                        break
             
             if not pos:
                 logger.error(f"Position {position_id} not found for immediate close")
@@ -491,7 +530,7 @@ class PositionManager:
         # Update in DB
         self.db.update_position_pnl(position['position_id'], pnl, current_price, self.mode)
         
-    def sync_state(self):
+    def sync_state(self, current_prices: Dict[str, float] = None):
         """
         Sync state from Database.
         1. Import pending orders created by Dashboard.
@@ -612,36 +651,32 @@ class PositionManager:
             
             for pos in close_requests:
                 pos_id = pos['position_id']
-                # Check if it matches current position
-                if self.current_position and self.current_position['position_id'] == pos_id:
-                    logger.info(f"Processing close request for position {pos_id}")
-                    # We need current price to close. 
-                    # Ideally we have it from the main bot loop.
-                    # We can Trigger a close flag? 
-                    # Or just place a market order here if we have price?
-                    # We don't have price passed here easily. 
-                    # Strategy: Set a flag 'force_close' on the object? 
-                    # OR: Just update the DB status back to 'open' but trigger the close_position logic?
-                    
-                    # Better: self.close_position() requires price. 
-                    # If we don't have it, we can't close safely with Limit.
-                    # Use Market order?
-                    # Let's set a flag on the self.current_position object
-                    self.current_position['force_close'] = True
+                symbol = pos.get('symbol')
+                logger.info(f"Processing close request for position {pos_id} ({symbol})")
                 
+                # Get Price
+                price = None
+                if current_prices and symbol in current_prices:
+                    price = current_prices[symbol]
+                
+                if price:
+                    # Execute immediate close
+                    # Pass 'pos' dict explicitly to avoid lookup failure for zombie positions
+                    success = self.close_position_immediate(pos_id, price, reason="manual_db_request", position_data=pos)
+                    if success:
+                        logger.info(f"Successfully executed manual close for {pos_id}")
+                        # Update status to 'closing' to PREVENT INFINITE LOOP (spamming orders)
+                        try:
+                            self.db.update_position_status(pos_id, 'closing', self.mode)
+                        except Exception as e:
+                            logger.error(f"Failed to update status to closing for {pos_id}: {e}")
+                    else:
+                        logger.error(f"Failed to execute manual close for {pos_id}")
                 else:
-                    # It's a request for a position we don't think we have active?
-                    # Maybe it's already closed. Update DB to closed just in case?
-                    # Or it's a desync. Ignore.
-                    pass
+                    logger.warning(f"Cannot process close request for {symbol}: No price data")
 
             # === 4. Sync Risk (SL/TP) ===
             if self.current_position:
-                # Re-fetch from DB to check for updates
-                # Optimization: Only do this every X seconds? scan is expensive?
-                # For MVP, maybe we skip full scan and Query specific ID?
-                # But we don't have Key condition easily without index.
-                # Actually, we can just GET item since we have Position ID
                 try:
                     # Determine table
                     table = positions_table
@@ -651,7 +686,6 @@ class PositionManager:
                         # Update local SL/TP
                         self.current_position['stop_loss'] = float(db_pos.get('stop_loss', 0)) if db_pos.get('stop_loss') else None
                         self.current_position['take_profit'] = float(db_pos.get('take_profit', 0)) if db_pos.get('take_profit') else None
-                        # logger.info(f"Synced risk for {self.current_position['symbol']}: SL={self.current_position['stop_loss']}")
                 except Exception as e:
                     logger.error(f"Error syncing risk params: {e}")
 
