@@ -424,3 +424,41 @@ class DynamoManager:
         except Exception as e:
             print(f"Unexpected error in get_active_position: {e}")
             return None
+
+    def get_test_account_balance(self):
+        """Get the current test account balance (latest entry)."""
+        try:
+            # Table has composite key (account_id, timestamp)
+            # We query for 'test_account' and get the latest by timestamp
+            response = self.test_account_table.query(
+                KeyConditionExpression=boto3.dynamodb.conditions.Key('account_id').eq('test_account'),
+                ScanIndexForward=False, # Descending order (newest first)
+                Limit=1
+            )
+            items = response.get('Items', [])
+            if items:
+                return {
+                    'balance': float(items[0]['balance']),
+                    'updated_at': items[0].get('updated_at')
+                }
+            return None
+        except Exception as e:
+            print(f"Error getting test account balance: {e}")
+            return None
+            
+    def update_test_account_balance(self, balance: float):
+        """Update test account balance."""
+        try:
+            timestamp = int(datetime.now().timestamp() * 1000)
+            self.test_account_table.put_item(
+                Item={
+                    'account_id': 'test_account',
+                    'timestamp': timestamp,
+                    'balance': Decimal(str(balance)),
+                    'updated_at': timestamp
+                }
+            )
+            return True
+        except Exception as e:
+            print(f"Error updating test account balance: {e}")
+            return False

@@ -31,11 +31,23 @@ class PositionManager:
         # Mode-specific initialization
         if mode == "TEST":
             initial_balance = config.get('test_initial_balance', 10000.0)
-            self.simulator = PaperTradingSimulator(initial_balance)
+            
+            # Try to load existing balance from database
+            saved_account = db.get_test_account_balance()
+            if saved_account:
+                starting_balance = saved_account['balance']
+                logger.info(f"Loaded saved test account balance: ${starting_balance:,.2f}")
+            else:
+                starting_balance = initial_balance
+                logger.info(f"No saved balance found, starting with initial: ${starting_balance:,.2f}")
+                # Persist initial balance immediately so it's not lost on restart
+                db.update_test_account_balance(starting_balance)
+            
+            self.simulator = PaperTradingSimulator(starting_balance)
             # Use test tables
             self.positions_table_name = 'test_positions'
             self.orders_table_name = 'test_orders'
-            logger.info(f"PositionManager in TEST mode with ${initial_balance:,.2f} paper balance")
+            logger.info(f"PositionManager in TEST mode with ${starting_balance:,.2f} paper balance")
         else:  # LIVE
             self.simulator = None
             self.positions_table_name = 'positions'
@@ -115,6 +127,11 @@ class PositionManager:
                     order_log['created_at'] = int(order_data['created_at'].timestamp() * 1000)
                     if 'expires_at' in order_log:
                         order_log['expires_at'] = int(order_data['expires_at'].timestamp() * 1000)
+                    
+                    # Convert float values to Decimal for DynamoDB
+                    for k, v in order_log.items():
+                        if isinstance(v, float):
+                            order_log[k] = Decimal(str(v))
                     
                     # Log to test orders table
                     self.db.test_orders_table.put_item(Item=order_log)
@@ -196,6 +213,11 @@ class PositionManager:
                             if 'expires_at' in order_log:
                                 order_log['expires_at'] = int(order_log['expires_at'].timestamp() * 1000)
                             
+                            # Convert float values to Decimal for DynamoDB
+                            for k, v in order_log.items():
+                                if isinstance(v, float):
+                                    order_log[k] = Decimal(str(v))
+                            
                             self.db.test_orders_table.put_item(Item=order_log)
                         except Exception as e:
                             logger.error(f"Failed to persist filled test order: {e}")
@@ -250,6 +272,11 @@ class PositionManager:
                                               if isinstance(v, float): pos_log[k] = Decimal(str(v))
                                           self.db.test_positions_table.put_item(Item=pos_log)
                                           logger.info(f"[TEST] Closed position persisted.")
+
+                                          # Update Account Balance in DB
+                                          self.db.update_test_account_balance(self.simulator.balance)
+                                          logger.info(f"[TEST] Account balance persisted: ${self.simulator.balance:.2f}")
+
                                       except Exception as e:
                                           logger.error(f"Failed persist closed pos: {e}")
 
@@ -392,6 +419,57 @@ class PositionManager:
         
         if order:
             logger.info(f"Closing position {pos['position_id']} with order {order['order_id']}")
+    
+    def close_position_immediate(self, position_id: str, current_price: float, reason: str = 'manual') -> bool:
+        """
+        Immediately close a position using market-like limit order.
+        Used for position flipping.
+        Returns True if close order placed successfully.
+        """
+        try:
+            # Find position
+            pos = None
+            if self.current_position and self.current_position.get('position_id') == position_id:
+                pos = self.current_position
+            else:
+                # Check in open_positions dict
+                pos = self.open_positions.get(position_id)
+            
+            if not pos:
+                logger.error(f"Position {position_id} not found for immediate close")
+                return False
+            
+            symbol = pos['symbol']
+            side = pos['side']
+            amount = pos['quantity']
+            
+            # Determine exit side (opposite of entry)
+            exit_side = 'sell' if side == 'buy' else 'buy'
+            
+            # Place aggressive limit order for immediate execution
+            # In PAPER mode, this will auto-fill
+            # In LIVE mode, use tight limit to ensure fill
+            logger.info(f"[FLIP] Closing {position_id}: {side} position, placing {exit_side} order")
+            
+            order = self.place_limit_order(
+                symbol=symbol,
+                side=exit_side,
+                current_price=current_price,
+                amount=amount,
+                order_type='exit'
+            )
+            
+            if order:
+                logger.info(f"[FLIP] Close order placed for {position_id}: {order.get('order_id')}")
+                return True
+            else:
+                logger.error(f"[FLIP] Failed to place close order for {position_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[FLIP] Error in close_position_immediate: {e}")
+            logger.exception("Full traceback:")
+            return False
     
     def update_position_pnl(self, symbol: str, current_price: float):
         """Update unrealized P&L for open position."""

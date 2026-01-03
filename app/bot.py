@@ -297,16 +297,21 @@ class TradingBot:
                     logger.info(f"Ignoring {action} signal for {symbol}: Already in {pos['side']} position")
                     return
                 
-                # Rule 3: If opposite side, Close and Reverse
+                # Rule 3: If opposite side, implement Position Flip if enabled
                 if pos['side'] != action_side:
-                    logger.info(f"Opposite signal detected ({action} vs {pos['side']}). Closing current position...")
-                    self.position_manager.close_position(price)
+                    # Check if position flip is enabled in config
+                    enable_flip = self.config.get('trading', {}).get('enable_position_flip', False)
                     
-                    # Note on Rule 3 (Create new position): 
-                    # With Limit Orders, we cannot guarantee immediate fill of the close/flip.
-                    # Opening a new position immediately would violate Rule 2 (Single Position) by having 2 active "pending" logic paths.
-                    # We prioritize closing. The system will be ready for the NEXT entry once this closes.
-                    return
+                    if enable_flip:
+                        logger.info(f"[FLIP] Opposite signal detected: {action} vs {pos['side']}. Flipping position...")
+                        self.flip_position(symbol, pos, action, price)
+                        return
+                    else:
+                        # Original behavior: close only, no flip
+                        logger.info(f"Opposite signal detected ({action} vs {pos['side']}). Closing current position (flip disabled)...")
+                        self.position_manager.close_position(price)
+                        # Do not open new position
+                        return
 
             # Check if we can open a position (Rule 2)
             if not self.position_manager.can_open_position(symbol):
@@ -335,6 +340,50 @@ class TradingBot:
                 
         except Exception as e:
             logger.exception(f"Trade execution failed: {e}")
+    
+    def flip_position(self, symbol: str, current_position: dict, new_signal: str, current_price: float):
+        """
+        Close existing position and immediately open opposite position.
+        """
+        try:
+            position_id = current_position['position_id']
+            old_side = current_position['side']
+            
+            # Step 1: Close current position immediately
+            logger.info(f"[FLIP] Step 1/2: Closing {old_side} position {position_id} at ${current_price}")
+            close_success = self.position_manager.close_position_immediate(
+                position_id=position_id,
+                current_price=current_price,
+                reason='flip'
+            )
+            
+            if not close_success:
+                logger.error(f"[FLIP] Failed to close position {position_id}. Aborting flip.")
+                return
+            
+            # Step 2: Open new position in opposite direction
+            new_side = 'buy' if new_signal.upper() == 'BUY' else 'sell'
+            logger.info(f"[FLIP] Step 2/2: Opening new {new_side} position at ${current_price}")
+            
+            # Calculate position size
+            amount = self.position_manager.calculate_position_size(symbol, current_price)
+            if amount is None:
+                logger.error(f"[FLIP] Failed to calculate position size. Flip incomplete.")
+                return
+            
+            # Place new limit order
+            order = self.position_manager.place_limit_order(symbol, new_side, current_price, amount, order_type='entry')
+            
+            if order:
+                logger.info(f"[FLIP] Position flip completed successfully: {old_side} → {new_side}")
+                logger.info(f"[FLIP] New order placed: {new_side} {amount} {symbol} @ {order['price']}")
+            else:
+                logger.error(f"[FLIP] Failed to place new order. Old position closed but new position not opened.")
+                
+        except Exception as e:
+            logger.error(f"[FLIP] Position flip failed: {e}")
+            logger.exception("Full traceback:")
+
 
 
     def log_status(self):

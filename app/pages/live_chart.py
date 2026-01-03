@@ -140,20 +140,36 @@ if manual_trading_enabled:
                     
                     pm = PositionManager(exchange, db, config['trading']['risk_management'], mode)
                     
-                    # Calculate size and place order
-                    if pm.can_open_position(symbol):
+                    # Check if position exists
+                    active_pos = db.get_active_position(mode)
+                    enable_flip = config['trading'].get('enable_position_flip', False)
+                    
+                    if active_pos and active_pos['symbol'] == symbol:
+                        # Position exists - check if flip needed
+                        if active_pos['side'] == 'short' and enable_flip:
+                            # Opposite position - flip it!
+                            st.sidebar.info("🔄 Flipping SHORT → BUY...")
+                            close_ok = pm.close_position_immediate(active_pos['position_id'], current_price, 'flip')
+                            if close_ok:
+                                amount = pm.calculate_position_size(symbol, current_price)
+                                if amount:
+                                    order = pm.place_limit_order(symbol, 'buy', current_price, amount)
+                                    if order:
+                                        db.log_signal({'symbol': symbol, 'signal': 'BUY', 'algo': 'MANUAL', 'price': current_price, 'timestamp': int(time.time() * 1000)})
+                                        st.sidebar.success(f"✅ Position flipped! BUY @ ${current_price:.2f}")
+                                    else:
+                                        st.sidebar.error("❌ Flip failed: couldn't open new position")
+                            else:
+                                st.sidebar.error("❌ Flip failed: couldn't close old position")
+                        else:
+                            st.sidebar.warning("⚠️ Already have same-side position (BUY)" if enable_flip else "⚠️ Cannot open position (flip disabled)")
+                    elif pm.can_open_position(symbol):
+                        # No position - place normally
                         amount = pm.calculate_position_size(symbol, current_price)
                         if amount:
                             order = pm.place_limit_order(symbol, 'buy', current_price, amount)
                             if order:
-                                # Log manual signal
-                                db.log_signal({
-                                    'symbol': symbol,
-                                    'signal': 'BUY',
-                                    'algo': 'MANUAL',
-                                    'price': current_price,
-                                    'timestamp': int(time.time() * 1000)
-                                })
+                                db.log_signal({'symbol': symbol, 'signal': 'BUY', 'algo': 'MANUAL', 'price': current_price, 'timestamp': int(time.time() * 1000)})
                                 st.sidebar.success(f"✅ BUY order placed @ ${current_price:.2f}")
                                 st.sidebar.caption(f"Order ID: {order.get('order_id', 'N/A')}")
                             else:
@@ -161,7 +177,7 @@ if manual_trading_enabled:
                         else:
                             st.sidebar.error("❌ Failed to calculate position size")
                     else:
-                        st.sidebar.warning("⚠️ Cannot open position (already have one open)")
+                        st.sidebar.warning("⚠️ Cannot open position (max positions reached)")
                 else:
                     st.sidebar.error("❌ No price data available")
             except Exception as e:
@@ -193,18 +209,36 @@ if manual_trading_enabled:
                     
                     pm = PositionManager(exchange, db, config['trading']['risk_management'], mode)
                     
-                    if pm.can_open_position(symbol):
+                    # Check if position exists
+                    active_pos = db.get_active_position(mode)
+                    enable_flip = config['trading'].get('enable_position_flip', False)
+                    
+                    if active_pos and active_pos['symbol'] == symbol:
+                        # Position exists - check if flip needed
+                        if active_pos['side'] == 'long' and enable_flip:
+                            # Opposite position - flip it!
+                            st.sidebar.info("🔄 Flipping LONG → SELL...")
+                            close_ok = pm.close_position_immediate(active_pos['position_id'], current_price, 'flip')
+                            if close_ok:
+                                amount = pm.calculate_position_size(symbol, current_price)
+                                if amount:
+                                    order = pm.place_limit_order(symbol, 'sell', current_price, amount)
+                                    if order:
+                                        db.log_signal({'symbol': symbol, 'signal': 'SELL', 'algo': 'MANUAL', 'price': current_price, 'timestamp': int(time.time() * 1000)})
+                                        st.sidebar.success(f"✅ Position flipped! SELL @ ${current_price:.2f}")
+                                    else:
+                                        st.sidebar.error("❌ Flip failed: couldn't open new position")
+                            else:
+                                st.sidebar.error("❌ Flip failed: couldn't close old position")
+                        else:
+                            st.sidebar.warning("⚠️ Already have same-side position (SELL)" if enable_flip else "⚠️ Cannot open position (flip disabled)")
+                    elif pm.can_open_position(symbol):
+                        # No position - place normally
                         amount = pm.calculate_position_size(symbol, current_price)
                         if amount:
                             order = pm.place_limit_order(symbol, 'sell', current_price, amount)
                             if order:
-                                db.log_signal({
-                                    'symbol': symbol,
-                                    'signal': 'SELL',
-                                    'algo': 'MANUAL',
-                                    'price': current_price,
-                                    'timestamp': int(time.time() * 1000)
-                                })
+                                db.log_signal({'symbol': symbol, 'signal': 'SELL', 'algo': 'MANUAL', 'price': current_price, 'timestamp': int(time.time() * 1000)})
                                 st.sidebar.success(f"✅ SELL order placed @ ${current_price:.2f}")
                                 st.sidebar.caption(f"Order ID: {order.get('order_id', 'N/A')}")
                             else:
@@ -212,7 +246,7 @@ if manual_trading_enabled:
                         else:
                             st.sidebar.error("❌ Failed to calculate position size")
                     else:
-                        st.sidebar.warning("⚠️ Cannot open position (already have one open)")
+                        st.sidebar.warning("⚠️ Cannot open position (max positions reached)")
                 else:
                     st.sidebar.error("❌ No price data available")
             except Exception as e:
