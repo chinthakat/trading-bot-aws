@@ -465,7 +465,7 @@ class TradingBot:
             # Check orders every 10s (every iteration)
             try:
                 # 1. Sync State (New Orders, Cancel/Close Requests, Risk Updates)
-                self.position_manager.sync_state()
+                self.position_manager.sync_state(self.latest_prices)
 
                 # 2. Check for Forced Close Requests
                 pos = self.position_manager.current_position
