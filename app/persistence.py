@@ -355,6 +355,7 @@ class DynamoManager:
                     elif pnl < 0:
                         loss_count += 1
             
+            
             return {
                 'total_pnl': total_pnl,
                 'open_pnl': open_pnl,
@@ -366,3 +367,52 @@ class DynamoManager:
         except ClientError as e:
             print(f"Error getting account P&L: {e}")
             return {'total_pnl': 0, 'open_pnl': 0, 'closed_pnl': 0, 'win_count': 0, 'loss_count': 0, 'win_rate': 0}
+
+    def get_active_position(self, mode="LIVE"):
+        """
+        Get the currently active position (open or request_close).
+        Returns None if no active position is found.
+        """
+        try:
+            table = self.test_positions_table if mode == "TEST" else self.positions_table
+            
+            # Scan for status=open OR status=request_close
+            # Using partial scan with FilterExpression
+            response = table.scan(
+                FilterExpression='#st IN (:open, :req_close)',
+                ExpressionAttributeNames={'#st': 'status'},
+                ExpressionAttributeValues={
+                    ':open': 'open',
+                    ':req_close': 'request_close'
+                }
+            )
+            
+            items = response.get('Items', [])
+            if items:
+                # Return the first found active position
+                # (Assuming Rule 2: Single Position Only)
+                pos = items[0]
+                # Convert Decimals to appropriate types
+                pos['entry_price'] = float(pos['entry_price'])
+                pos['quantity'] = float(pos['quantity'])
+                pos['pnl'] = float(pos.get('pnl', 0))
+                # Convert timestamp if needed? 
+                # PositionManager expects datetime objects for internal usage usually?
+                # Actually _create_position_from_order sets datetime. 
+                # DB stores milliseconds.
+                # Let's verify what PositionManager expects.
+                # It uses it for calculations/logging. 
+                # Let's convert entry_time to datetime
+                if 'entry_time' in pos:
+                    pos['entry_time'] = datetime.fromtimestamp(int(pos['entry_time']) / 1000)
+                
+                return pos
+            
+            return None
+            
+        except ClientError as e:
+            print(f"Error fetching active position: {e}")
+            return None
+        except Exception as e:
+            print(f"Unexpected error in get_active_position: {e}")
+            return None
