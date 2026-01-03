@@ -12,25 +12,34 @@ def render_account_summary(db, mode, config):
     # Get P&L Stats for specific mode
     pnl_stats = db.get_account_pnl(mode=mode)
     
-    # Estimate Balance
-    # In a real app, 'balance' should be fetched from an Account/Wallet endpoint or table
-    # For now, we mock it based on initial + realized
+    # Get P&L Stats for specific mode
+    pnl_stats = db.get_account_pnl(mode=mode)
+    
+    # Calculate Balance & Equity
     if mode == "TEST":
-        initial = config['trading'].get('test_initial_balance', 10000.0)
+        # Try to get persisted balance first (Most Accurate)
+        test_acct = db.get_test_account_balance()
+        if test_acct:
+            current_balance = test_acct['balance']
+        else:
+            # Fallback
+            initial = config['trading'].get('test_initial_balance', 10000.0)
+            current_balance = initial + pnl_stats['closed_pnl']
     else:
-        initial = 0.0 # Live balance hard to guess without API fetch
-        
-    current_balance = initial + pnl_stats['closed_pnl']
+        # LIVE Mode: We don't have wallet fetch yet, so use PnL accumulator
+        initial = 0.0 
+        current_balance = initial + pnl_stats['closed_pnl']
+
     equity = current_balance + pnl_stats['open_pnl']
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        st.metric("Total Equity", f"${equity:,.2f}", delta=f"{pnl_stats['total_pnl']:,.2f}")
+        st.metric("Total Equity", f"${equity:,.4f}", delta=f"{pnl_stats['total_pnl']:,.4f}")
     with col2:
         st.metric("Cash Balance", f"${current_balance:,.2f}")
     with col3:
-        st.metric("Open P&L", f"${pnl_stats['open_pnl']:,.2f}", 
+        st.metric("Open P&L", f"${pnl_stats['open_pnl']:,.4f}", 
              delta_color="normal" if pnl_stats['open_pnl'] >= 0 else "inverse")
     with col4:
         win_rate = pnl_stats['win_rate'] * 100
@@ -88,7 +97,7 @@ def render_positions_table(db, mode):
                     "symbol": st.column_config.TextColumn("Symbol"),
                     "stop_loss": st.column_config.NumberColumn("Stop Loss", help="Edit to update"),
                     "take_profit": st.column_config.NumberColumn("Take Profit", help="Edit to update"),
-                    "pnl": st.column_config.NumberColumn("PnL", format="$%.2f"),
+                    "pnl": st.column_config.NumberColumn("PnL", format="$%.4f"),
                     "entry_time": st.column_config.DatetimeColumn("Entry Time", format="D MMM, HH:mm"),
                     "status": st.column_config.TextColumn("Status")
                 }

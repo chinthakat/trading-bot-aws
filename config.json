@@ -46,6 +46,7 @@
             "order_ttl": 300,
             "max_slippage_pct": 0.5
         },
-        "manual_trading_enabled": true
+        "manual_trading_enabled": true,
+        "enable_position_flip": true
     }
 }
