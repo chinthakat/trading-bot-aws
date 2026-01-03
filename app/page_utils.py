@@ -63,7 +63,8 @@ def render_positions_table(db, mode):
             
             df = df.sort_values('entry_time', ascending=False)
             
-            open_pos = df[df['status'] == 'open'].copy()
+            # Include 'request_close' in open positions view
+            open_pos = df[df['status'].isin(['open', 'request_close'])].copy()
             closed_pos = df[df['status'] == 'closed']
 
             # --- Open Positions ---
@@ -88,15 +89,19 @@ def render_positions_table(db, mode):
                     "stop_loss": st.column_config.NumberColumn("Stop Loss", help="Edit to update"),
                     "take_profit": st.column_config.NumberColumn("Take Profit", help="Edit to update"),
                     "pnl": st.column_config.NumberColumn("PnL", format="$%.2f"),
-                    "entry_time": st.column_config.DatetimeColumn("Entry Time", format="D MMM, HH:mm")
+                    "entry_time": st.column_config.DatetimeColumn("Entry Time", format="D MMM, HH:mm"),
+                    "status": st.column_config.TextColumn("Status")
                 }
+                
+                # Add status column to view if not there
+                if 'status' not in cols: cols.append('status')
 
                 # Render Editor
                 edited_df = st.data_editor(
                     open_pos[cols],
                     hide_index=True,
                     column_config=column_config,
-                    disabled=['symbol', 'side', 'entry_price', 'current_price', 'quantity', 'pnl', 'entry_time'],
+                    disabled=['symbol', 'side', 'entry_price', 'current_price', 'quantity', 'pnl', 'entry_time', 'status'],
                     key=f"positions_editor_{mode}"
                 )
                 

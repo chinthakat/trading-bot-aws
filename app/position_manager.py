@@ -324,12 +324,27 @@ class PositionManager:
         
         for order_id in expired:
             try:
-                logger.info(f"Canceling expired order: {order_id}")
-                self.exchange.cancel_order(order_id)
+                order_data = self.pending_orders.get(order_id)
+                if not order_data: continue
+                symbol = order_data.get('symbol')
                 
-                order_data = self.pending_orders.pop(order_id)
-                order_data['status'] = 'expired'
-                self.db.update_order(order_data)
+                logger.info(f"Canceling expired order: {order_id}")
+                
+                if self.mode == "TEST" and self.simulator:
+                    if order_id in self.simulator.pending_orders:
+                        del self.simulator.pending_orders[order_id]
+                else:
+                    # Live Mode - Requires Symbol
+                    if symbol:
+                        self.exchange.cancel_order(order_id, symbol)
+                    else:
+                        logger.warning(f"Cannot cancel order {order_id} without symbol")
+                
+                # Update Local State
+                self.pending_orders.pop(order_id)
+                
+                # Update DB
+                self.db.update_order_status(order_id, 'expired', self.mode)
                 
             except Exception as e:
                 logger.error(f"Failed to cancel expired order {order_id}: {e}")
@@ -348,7 +363,7 @@ class PositionManager:
         }
         
         self.current_position = position
-        self.db.log_position(position)
+        self.db.log_position(position, self.mode)
         
         logger.info(f"Position opened: {position['position_id']} "
                    f"{position['side']} {position['quantity']} {position['symbol']} @ {position['entry_price']}")
@@ -364,8 +379,16 @@ class PositionManager:
         # Determine side for exit order (opposite of entry)
         exit_side = 'sell' if pos['side'] == 'long' else 'buy'
         
+        # Use simple "Marketable Limit" logic to ensure fill
+        # For Sell: Price * 0.995 (Sell lower than market -> fills at market)
+        # For Buy: Price * 1.005 (Buy higher than market -> fills at market)
+        if exit_side == 'sell':
+            limit_price = current_price * 0.995
+        else:
+            limit_price = current_price * 1.005
+            
         # Place limit order to close
-        order = self.place_limit_order(pos['symbol'], exit_side, current_price, pos['quantity'], order_type='exit')
+        order = self.place_limit_order(pos['symbol'], exit_side, limit_price, pos['quantity'], order_type='exit')
         
         if order:
             logger.info(f"Closing position {pos['position_id']} with order {order['order_id']}")
@@ -387,9 +410,8 @@ class PositionManager:
         position['pnl'] = pnl
         position['current_price'] = current_price
         
-        # Update in DB (optimize to not write every 2s?)
-        # For now, write e.g. if P&L changes significantly or throttling
-        # self.db.update_position(position)
+        # Update in DB
+        self.db.update_position_pnl(position['position_id'], pnl, current_price, self.mode)
         
     def sync_state(self):
         """
@@ -446,7 +468,21 @@ class PositionManager:
                             self.simulator.pending_orders[order_id] = sim_order 
                             logger.info(f"[TEST] Injected new dashboard order {order_id}")
                     
+                    # Store in local state (Convert timestamps first)
+                    if 'expires_at' in order and isinstance(order['expires_at'], (Decimal, int, float, str)):
+                        try:
+                            order['expires_at'] = datetime.fromtimestamp(float(order['expires_at'])/1000)
+                        except:
+                            order['expires_at'] = datetime.now() + pd.Timedelta(hours=24) # Fallback
+                            
+                    if 'created_at' in order and isinstance(order['created_at'], (Decimal, int, float, str)):
+                         try:
+                            order['created_at'] = datetime.fromtimestamp(float(order['created_at'])/1000)
+                         except:
+                            order['created_at'] = datetime.now()
+
                     self.pending_orders[order_id] = order
+                    logger.info(f"Imported pending order {order_id} from DB")
             
             # === 2. Process Cancel Requests ===
             resp = orders_table.scan(
