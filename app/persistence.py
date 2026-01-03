@@ -3,6 +3,7 @@ import time
 import uuid
 from botocore.exceptions import ClientError
 from decimal import Decimal
+from datetime import datetime
 import math
 
 class DynamoManager:
@@ -176,9 +177,10 @@ class DynamoManager:
     
     # === Position Management Methods ===
     
-    def log_position(self, position_data):
+    def log_position(self, position_data, mode="LIVE"):
         """Log a new position to DynamoDB."""
         try:
+            table = self.test_positions_table if mode == "TEST" else self.positions_table
             item = {
                 'position_id': position_data['position_id'],
                 'symbol': position_data['symbol'],
@@ -189,15 +191,16 @@ class DynamoManager:
                 'status': position_data['status'],
                 'pnl': Decimal(str(position_data.get('pnl', 0)))
             }
-            self.positions_table.put_item(Item=item)
-            print(f"Logged position: {item['position_id']}")
+            table.put_item(Item=item)
+            print(f"[{mode}] Logged position: {item['position_id']}")
         except ClientError as e:
             print(f"Error logging position: {e}")
     
-    def update_position_pnl(self, position_id, pnl, current_price):
+    def update_position_pnl(self, position_id, pnl, current_price, mode="LIVE"):
         """Update P&L for an open position."""
         try:
-            self.positions_table.update_item(
+            table = self.test_positions_table if mode == "TEST" else self.positions_table
+            table.update_item(
                 Key={'position_id': position_id},
                 UpdateExpression='SET pnl = :pnl, current_price = :price',
                 ExpressionAttributeValues={
@@ -208,10 +211,11 @@ class DynamoManager:
         except ClientError as e:
             print(f"Error updating position P&L: {e}")
     
-    def close_position(self, position_id, exit_price, exit_time, final_pnl):
+    def close_position(self, position_id, exit_price, exit_time, final_pnl, mode="LIVE"):
         """Mark a position as closed."""
         try:
-            self.positions_table.update_item(
+            table = self.test_positions_table if mode == "TEST" else self.positions_table
+            table.update_item(
                 Key={'position_id': position_id},
                 UpdateExpression='SET #status = :status, exit_price = :exit_price, exit_time = :exit_time, pnl = :pnl',
                 ExpressionAttributeNames={'#status': 'status'},
@@ -222,13 +226,14 @@ class DynamoManager:
                     ':pnl': Decimal(str(final_pnl))
                 }
             )
-            print(f"Closed position: {position_id} with P&L: {final_pnl}")
+            print(f"[{mode}] Closed position: {position_id} with P&L: {final_pnl}")
         except ClientError as e:
             print(f"Error closing position: {e}")
     
-    def log_order(self, order_data):
+    def log_order(self, order_data, mode="LIVE"):
         """Log a new order to DynamoDB."""
         try:
+            table = self.test_orders_table if mode == "TEST" else self.orders_table
             item = {
                 'order_id': order_data['order_id'],
                 'symbol': order_data['symbol'],
@@ -239,8 +244,11 @@ class DynamoManager:
                 'created_at': int(order_data['created_at'].timestamp() * 1000),
                 'expires_at': int(order_data['expires_at'].timestamp() * 1000)
             }
-            self.orders_table.put_item(Item=item)
-            print(f"Logged order: {item['order_id']}")
+            if 'type' in order_data:
+                item['type'] = order_data['type']
+                
+            table.put_item(Item=item)
+            print(f"[{mode}] Logged order: {item['order_id']}")
         except ClientError as e:
             print(f"Error logging order: {e}")
     
@@ -264,7 +272,7 @@ class DynamoManager:
             print(f"Error updating order: {e}")
 
     def update_order_status(self, order_id, new_status, mode="LIVE"):
-        """Update order status (e.g. to 'request_cancel')."""
+        """Update order status."""
         try:
             table = self.test_orders_table if mode == "TEST" else self.orders_table
             table.update_item(
