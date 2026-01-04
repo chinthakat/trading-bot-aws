@@ -126,6 +126,23 @@ if manual_trading_enabled:
                 if latest_items:
                     current_price = float(latest_items[0]['close'])
                     
+                    # Generate Manual ID
+                    try:
+                        seq = db.get_next_sequence('manual_id')
+                        manual_id = f"M{seq:04d}"
+                        
+                        db.log_audit(
+                            action='MANUAL_TRIGGER',
+                            cause='BUY Button',
+                            details={'symbol': symbol, 'price': current_price},
+                            mode=mode,
+                            price=current_price,
+                            side='BUY',
+                            signal_id=manual_id
+                        )
+                    except:
+                        manual_id = None
+                    
                     # Initialize exchange and PositionManager
                     exchange_class = getattr(ccxt, config['exchange']['id'])
                     exchange = exchange_class({
@@ -546,9 +563,34 @@ if items:
     except Exception as e:
         st.caption(f"⚠️ Could not load trade markers: {e}")
 
+    # Calculate Y-Axis Range based on Candles + Indicators (Ignore outliers in markers)
+    try:
+        # Columns to consider for auto-scaling
+        scale_cols = ['low', 'high'] + indicators
+        valid_cols = [c for c in scale_cols if c in df.columns]
+        
+        if valid_cols:
+            min_y = df[valid_cols].min().min()
+            max_y = df[valid_cols].max().max()
+            
+            # Add 2% padding
+            diff = max_y - min_y
+            if diff == 0: diff = max_y * 0.01
+            
+            y_range = [min_y - (diff * 0.1), max_y + (diff * 0.1)]
+        else:
+            y_range = None
+    except:
+        y_range = None
+
     fig.update_layout(
         title=f"{symbol} Real-Time Bot Stream [{mode} Mode]",
         yaxis_title="Price (USDT)",
+        yaxis=dict(
+            range=y_range,
+            autorange=False if y_range else True,
+            fixedrange=False # Allow user to zoom if they want
+        ),
         xaxis_rangeslider_visible=False,
         height=700,
         template="plotly_white" # Easier to read candles 
