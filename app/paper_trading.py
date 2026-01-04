@@ -106,8 +106,13 @@ class PaperTradingSimulator:
             should_fill = True
         
         if should_fill:
+            logger.info(f"[SIMULATOR] Filling {side} order {order_id}. Limit: {limit_price}, Market Passed: {current_price}")
             self._execute_fill(order, current_price)
             return True
+        else:
+            # Log failure reason (Sampled or Debug)
+            if datetime.now().second % 10 == 0: # Log occasionally to avoid spam
+                 logger.info(f"[SIMULATOR] NOT filling {side} {order_id}. Market {current_price} vs Limit {limit_price}")
         
         return False
     
@@ -155,34 +160,52 @@ class PaperTradingSimulator:
             logger.info(f"[PAPER] ✅ BUY filled: {amount} {symbol} @ ${fill_price:.2f} | Balance: ${self.balance:.2f}")
             
         else:  # sell
-            # Add proceeds to balance
-            proceeds = fill_price * amount
-            self.balance += proceeds
-            
-            # Close or reduce position
+            # Check existing position
             if symbol in self.positions:
                 pos = self.positions[symbol]
                 
-                # Calculate realized P&L
-                realized_pnl = (fill_price - pos['entry_price']) * amount
-                
-                pos['quantity'] -= amount
-                
-                if pos['quantity'] <= 0:
-                    # Position closed
-                    pos['status'] = 'closed'
-                    pos['exit_price'] = fill_price
-                    pos['exit_time'] = datetime.now()
-                    pos['pnl'] = realized_pnl
-                    
-                    self.closed_positions.append(pos)
-                    
-                    # Remove from active positions
-                    del self.positions[symbol]
-                
-                logger.info(f"[PAPER] ✅ SELL filled: {amount} {symbol} @ ${fill_price:.2f} | P&L: ${realized_pnl:+.2f} | Balance: ${self.balance:.2f}")
+                if pos['side'] == 'long':
+                     # CLOSE / REDUCE LONG
+                     self.balance += fill_price * amount # Cash out
+                     
+                     realized_pnl = (fill_price - pos['entry_price']) * amount
+                     pos['quantity'] -= amount
+                     
+                     if pos['quantity'] <= 0:
+                         # Closed
+                         pos['status'] = 'closed'
+                         pos['exit_price'] = fill_price
+                         pos['exit_time'] = datetime.now()
+                         pos['pnl'] = realized_pnl
+                         self.closed_positions.append(pos)
+                         del self.positions[symbol]
+                     
+                     logger.info(f"[PAPER] ✅ SELL (Close Long) filled: {amount} {symbol} @ ${fill_price:.2f} | P&L: ${realized_pnl:.2f}")
+                     
+                else:
+                     # ADD TO SHORT
+                     self.balance += fill_price * amount 
+                     
+                     total_qty = pos['quantity'] + amount
+                     avg_price = ((pos['entry_price'] * pos['quantity']) + (fill_price * amount)) / total_qty
+                     pos['quantity'] = total_qty
+                     pos['entry_price'] = avg_price
+                     logger.info(f"[PAPER] ✅ SELL (Add Short) filled: {amount} {symbol} @ ${fill_price:.2f}")
+            
             else:
-                logger.warning(f"[PAPER] SELL order filled but no position exists for {symbol}")
+                 # OPEN SHORT
+                 self.balance += fill_price * amount
+                 
+                 self.positions[symbol] = {
+                    'position_id': str(uuid.uuid4()),
+                    'symbol': symbol,
+                    'side': 'short',
+                    'entry_price': fill_price,
+                    'quantity': amount,
+                    'entry_time': datetime.now(),
+                    'status': 'open'
+                 }
+                 logger.info(f"[PAPER] ✅ SELL (Open Short) filled: {amount} {symbol} @ ${fill_price:.2f}")
     
     def get_position(self, symbol: str) -> Optional[Dict]:
         """Get current position for symbol."""

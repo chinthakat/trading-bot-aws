@@ -135,7 +135,7 @@ class PositionManager:
             logger.error(f"Error calculating position size for {symbol}: {e}")
             return None
     
-    def place_limit_order(self, symbol: str, side: str, current_price: float, amount: float, order_type: str = 'entry') -> Optional[Dict]:
+    def place_limit_order(self, symbol: str, side: str, current_price: float, amount: float, order_type: str = 'entry', signal_id: str = None) -> Optional[Dict]:
         """
         Place a limit order with slight offset from current price.
         Routes to simulator in TEST mode or real exchange in LIVE mode.
@@ -152,15 +152,28 @@ class PositionManager:
                 # Paper trading - use simulator
                 order_data = self.simulator.place_limit_order(symbol, side, limit_price, amount)
                 order_data['type'] = order_type # Tag order type
+                if signal_id: order_data['signal_id'] = signal_id
                 self.pending_orders[order_data['order_id']] = order_data
                 
-                # Log to test tables - use appropriate method or direct table access
+                # Log to test tables
+                try:
+                    # Audit Log
+                    self.db.log_audit(
+                        action='ORDER_PLACED',
+                        cause=f'Strategy' if order_type=='entry' else 'Exit/Manual',
+                        details=order_data.copy(),
+                        mode=self.mode
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to audit log order: {e}")
+                
+                # Update DB: test_orders
                 try:
                     # Convert datetime to timestamp for DynamoDB
                     order_log = order_data.copy()
-                    order_log['created_at'] = int(order_data['created_at'].timestamp() * 1000)
+                    order_log['created_at'] = int(order_log['created_at'].timestamp() * 1000)
                     if 'expires_at' in order_log:
-                        order_log['expires_at'] = int(order_data['expires_at'].timestamp() * 1000)
+                        order_log['expires_at'] = int(order_log['expires_at'].timestamp() * 1000)
                     
                     # Convert float values to Decimal for DynamoDB
                     for k, v in order_log.items():
@@ -172,6 +185,8 @@ class PositionManager:
                     logger.info(f"[TEST] Order logged to test_orders table: {order_data['order_id']}")
                 except Exception as e:
                     logger.error(f"Failed to log test order to DB: {e}")
+                
+                return order_data
                 
                 return order_data
                 
@@ -197,9 +212,21 @@ class PositionManager:
                     'expires_at': datetime.now() + timedelta(seconds=self.order_ttl_seconds),
                     'type': order_type # Tag
                 }
+                if signal_id: order_data['signal_id'] = signal_id
                 
                 self.pending_orders[order['id']] = order_data
+                self.pending_orders[order['id']] = order_data
                 self.db.log_order(order_data)
+                
+                try:
+                    self.db.log_audit(
+                        action='ORDER_PLACED',
+                        cause=f'Strategy' if order_type=='entry' else 'Exit/Manual',
+                        details=order_data.copy(),
+                        mode=self.mode
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to audit log order: {e}")
                 
                 logger.info(f"[LIVE] Order placed successfully: {order['id']}")
                 return order_data
@@ -380,7 +407,8 @@ class PositionManager:
         expired = []
         
         for order_id, order_data in self.pending_orders.items():
-            if now > order_data['expires_at']:
+            expires_at = order_data.get('expires_at')
+            if expires_at and now > expires_at:
                 expired.append(order_id)
         
         for order_id in expired:
@@ -454,7 +482,7 @@ class PositionManager:
         if order:
             logger.info(f"Closing position {pos['position_id']} with order {order['order_id']}")
     
-    def close_position_immediate(self, position_id: str, current_price: float, reason: str = 'manual', position_data: Dict = None) -> bool:
+    def close_position_immediate(self, position_id: str, current_price: float, reason: str = 'manual', position_data: Dict = None, signal_id: str = None) -> bool:
         """
         Immediately close a position using market-like limit order.
         Used for position flipping.
@@ -485,17 +513,22 @@ class PositionManager:
             # Determine exit side (opposite of entry)
             exit_side = 'sell' if side == 'buy' else 'buy'
             
-            # Place aggressive limit order for immediate execution
-            # In PAPER mode, this will auto-fill
-            # In LIVE mode, use tight limit to ensure fill
-            logger.info(f"[FLIP] Closing {position_id}: {side} position, placing {exit_side} order")
+            # Place aggressive limit order for immediate execution (Marketable Limit)
+            # Use 1% buffer to ensure fill
+            if exit_side == 'buy':
+                aggressive_price = current_price * 1.01
+            else:
+                aggressive_price = current_price * 0.99
+                
+            logger.info(f"[FLIP] Closing {position_id}: {side} position, placing {exit_side} order at {aggressive_price} (Market: {current_price})")
             
             order = self.place_limit_order(
                 symbol=symbol,
                 side=exit_side,
-                current_price=current_price,
+                current_price=aggressive_price,
                 amount=amount,
-                order_type='exit'
+                order_type='exit',
+                signal_id=signal_id
             )
             
             if order:

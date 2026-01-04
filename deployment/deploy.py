@@ -75,7 +75,8 @@ def deploy():
     files_to_upload = [
         os.path.join(base_dir, "app"), 
         os.path.join(base_dir, "config.json"), 
-        os.path.join(base_dir, "requirements.txt")
+        os.path.join(base_dir, "requirements.txt"),
+        os.path.join(base_dir, "deployment")
     ]
     
     # Check for .env

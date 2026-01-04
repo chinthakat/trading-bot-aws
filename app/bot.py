@@ -8,6 +8,7 @@ import sys
 from collections import deque
 from datetime import datetime
 from dotenv import load_dotenv
+from threading import Lock
 
 # Binance Connector
 from binance.websocket.spot.websocket_stream import SpotWebsocketStreamClient
@@ -51,6 +52,9 @@ class TradingBot:
         self.setup_strategies()
         self.setup_position_manager()
         
+        # Deduplication tracking
+        self.last_processed_kline_ts = {} # symbol -> timestamp
+        
         # In-memory storage for candles
         # { symbol: DataFrame or List of Dicts }
         # We keep slightly more than needed for long_window (e.g. 500)
@@ -62,6 +66,7 @@ class TradingBot:
         
         self.start_time = time.time()
         self.ws_client = None
+        self.lock = Lock()
 
     def load_config(self, path):
         with open(path, 'r') as f:
@@ -70,7 +75,9 @@ class TradingBot:
         self.symbols = self.config['trading']['symbols']
         self.base_currency = self.config['trading']['base_currency']
         self.risk_per_trade = self.config['trading']['risk_per_trade']
+        self.risk_per_trade = self.config['trading']['risk_per_trade']
         self.interval = self.config['trading'].get('interval', '1m')
+        self.mode = self.config['trading'].get('mode', 'TEST')
         
     def setup_exchange(self):
         # REST client for Order Execution (still needed)
@@ -173,75 +180,85 @@ class TradingBot:
         self.start_websocket()
 
     def process_kline(self, data):
-        try:
-            # Extract Candle Data
-            k = data['k']
-            symbol = data['s'] 
-            
-            with open("ws_debug.log", "a") as f:
-                f.write(f"{datetime.now()} KLINE: {symbol} Price:{k['c']} IsClosed:{k['x']}\n")
-
-            # Map raw symbol data 's' (BTCUSDT) to config symbol (BTC/USDT)
-            target_symbol = None
-            for s in self.symbols:
-                # DEBUG MAPPING
-                if s.replace('/', '') == symbol:
-                    target_symbol = s
-                    break
-            
-            if not target_symbol:
+        with self.lock:
+            try:
+                # Extract Candle Data
+                k = data['k']
+                symbol = data['s']
+                
                 with open("ws_debug.log", "a") as f:
-                    f.write(f"{datetime.now()} MAPPING FAIL: Got {symbol} but have {self.symbols}\n")
-                return
+                    f.write(f"{datetime.now()} KLINE: {symbol} Price:{k['c']} IsClosed:{k['x']}\n")
 
-            is_closed = k['x'] # boolean
-            close_price = float(k['c'])
-            
-            self.latest_prices[target_symbol] = close_price
-            
-            # Construct candle object
-            candle = {
-                'timestamp': k['t'], 
-                'open': float(k['o']),
-                'high': float(k['h']),
-                'low': float(k['l']),
-                'close': float(k['c']),
-                'volume': float(k['v']),
-                'symbol': target_symbol
-            }
-            
-            # --- REAL-TIME INDICATOR CALCULATION ---
-            # Create a customized copy of history + current candle to calculate indicators continuously
-            temp_history = list(self.candles[target_symbol])
-            temp_history.append(candle)
-            
-            cand_data_to_log = candle # Default to raw candle
-            
-            if len(temp_history) >= 20: # Minimal check, strategies have their own checks
-                try:
-                    df_temp = pd.DataFrame(temp_history)
-                    for name, strategy in self.strategies.items():
-                        strategy.calculate(df_temp)
+                # Map raw symbol data 's' (BTCUSDT) to config symbol (BTC/USDT)
+                target_symbol = None
+                for s in self.symbols:
+                    if s.replace('/', '') == symbol:
+                        target_symbol = s
+                        break
+                
+                if not target_symbol:
+                    with open("ws_debug.log", "a") as f:
+                        f.write(f"{datetime.now()} MAPPING FAIL: Got {symbol} but have {self.symbols}\n")
+                    return
+
+                is_closed = k['x'] # boolean
+                close_price = float(k['c'])
+                candle_ts = k['t']
+
+                # Construct candle object
+                candle = {
+                    'timestamp': k['t'], 
+                    'open': float(k['o']),
+                    'high': float(k['h']),
+                    'low': float(k['l']),
+                    'close': float(k['c']),
+                    'volume': float(k['v']),
+                    'symbol': target_symbol
+                }
+
+                # DEDUPLICATION CHECK
+                if is_closed:
+                    last_ts = self.last_processed_kline_ts.get(target_symbol, 0)
+                    if candle_ts <= last_ts:
+                        return
+                    self.last_processed_kline_ts[target_symbol] = candle_ts
                     
-                    # Get the last row (our live candle) which now has indicators
-                    cand_data_to_log = df_temp.iloc[-1].to_dict()
-                except Exception as calc_err:
-                    logger.error(f"RT Calc Error: {calc_err}")
+                    # Persist Closed Candle to Memory for Next Loop
+                    self.candles[target_symbol].append(candle)
+                    
+                    # Run Strategy on Closed Candle
+                    self.run_strategy(target_symbol)
 
-            # PERSIST LIVE CANDLE WITH INDICATORS
-            self.db.log_candle(cand_data_to_log)
+                self.latest_prices[target_symbol] = close_price
+                
+                # --- REAL-TIME INDICATOR CALCULATION ---
+                temp_history = list(self.candles[target_symbol])
+                
+                # Only append if not closed (because closed is already in self.candles)
+                if not is_closed:
+                    temp_history.append(candle)
+                
+                cand_data_to_log = candle
+                
+                if len(temp_history) >= 20: 
+                    try:
+                        df_temp = pd.DataFrame(temp_history)
+                        for name, strategy in self.strategies.items():
+                            strategy.calculate(df_temp)
+                        cand_data_to_log = df_temp.iloc[-1].to_dict()
+                    except Exception as calc_err:
+                        logger.error(f"RT Calc Error: {calc_err}")
 
-        except Exception as e:
-            logger.error(f"Real-time persist error: {e}")
+                # PERSIST LIVE CANDLE WITH INDICATORS
+                self.db.log_candle(cand_data_to_log)
+
+            except Exception as e:
+                logger.error(f"Real-time persist error: {e}")
+                return
         
         # logic: We only really commit to memory and run strategies on CLOSE of a candle
         # to mimic standard technical analysis.
-        if is_closed:
-            # 1. Update Memory
-            self.candles[target_symbol].append(candle)
-            
-            # 2. Run Strategy (Calculates indicators + Re-logs full candle)
-            self.run_strategy(target_symbol)
+
 
     def run_strategy(self, symbol):
         if len(self.candles[symbol]) < 50: # Minimum warmup
@@ -254,6 +271,28 @@ class TradingBot:
             signal = strategy.calculate(df) # This adds indicator columns to df
             
             if signal:
+                # Generate Readable Signal ID
+                seq_id = self.db.get_next_sequence('signal_id')
+                formatted_id = f"A{seq_id:04d}"
+                
+                # Audit Log
+                try:
+                    self.db.log_audit(
+                        action='SIGNAL_GENERATED',
+                        cause=f"Strategy:{name}",
+                        details={
+                            'symbol': symbol,
+                            'signal': signal,
+                            'strategy': name
+                        },
+                        mode=self.mode,
+                        price=df.iloc[-1]['close'],
+                        side='BUY' if signal == 'BUY' else 'SELL',
+                        signal_id=formatted_id
+                    )
+                except Exception as e:
+                    logger.error(f"Audit log failed: {e}")
+
                 # Log signal with SMA values (only on candle close!)
                 last_row = df.iloc[-1]
                 sma_short = last_row.get('sma_short', 'N/A')
@@ -273,7 +312,7 @@ class TradingBot:
                     'timestamp': int(time.time() * 1000)
                 })
                 
-                self.execute_trade(symbol, signal, name, df.iloc[-1]['close'])
+                self.execute_trade(symbol, signal, name, df.iloc[-1]['close'], signal_id=formatted_id)
 
 
         # Log Full Candle + Indicators to DB (Overwrites the raw real-time candle)
@@ -283,7 +322,7 @@ class TradingBot:
         # Explicit Log for User Clarity
         logger.info(f"REALTIME UPDATE ({symbol}): Close={last_row['close']} | SMA_S={last_row.get('sma_short', 'N/A')} | SMA_L={last_row.get('sma_long', 'N/A')}")
 
-    def execute_trade(self, symbol, action, algo, price):
+    def execute_trade(self, symbol, action, algo, price, signal_id=None):
         """Execute trade using PositionManager with limit orders."""
         try:
             # Rule 2 & 4: Check existing position interactions
@@ -304,7 +343,7 @@ class TradingBot:
                     
                     if enable_flip:
                         logger.info(f"[FLIP] Opposite signal detected: {action} vs {pos['side']}. Flipping position...")
-                        self.flip_position(symbol, pos, action, price)
+                        self.flip_position(symbol, pos, action, price, signal_id)
                         return
                     else:
                         # Original behavior: close only, no flip
@@ -331,7 +370,7 @@ class TradingBot:
             
             # Place limit order via PositionManager
             side = action.lower()  # "BUY" -> "buy", "SELL" -> "sell"
-            order = self.position_manager.place_limit_order(symbol, side, price, amount)
+            order = self.position_manager.place_limit_order(symbol, side, price, amount, signal_id=signal_id)
             
             if order:
                 logger.info(f"✓ Limit order placed: {action} {amount} {symbol} @ {order['price']}")
@@ -341,7 +380,7 @@ class TradingBot:
         except Exception as e:
             logger.exception(f"Trade execution failed: {e}")
     
-    def flip_position(self, symbol: str, current_position: dict, new_signal: str, current_price: float):
+    def flip_position(self, symbol: str, current_position: dict, new_signal: str, current_price: float, signal_id=None):
         """
         Close existing position and immediately open opposite position.
         """
@@ -354,7 +393,8 @@ class TradingBot:
             close_success = self.position_manager.close_position_immediate(
                 position_id=position_id,
                 current_price=current_price,
-                reason='flip'
+                reason='flip',
+                signal_id=signal_id
             )
             
             if not close_success:
@@ -372,7 +412,7 @@ class TradingBot:
                 return
             
             # Place new limit order
-            order = self.position_manager.place_limit_order(symbol, new_side, current_price, amount, order_type='entry')
+            order = self.position_manager.place_limit_order(symbol, new_side, current_price, amount, order_type='entry', signal_id=signal_id)
             
             if order:
                 logger.info(f"[FLIP] Position flip completed successfully: {old_side} → {new_side}")

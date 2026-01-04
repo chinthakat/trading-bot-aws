@@ -76,86 +76,125 @@ if st.sidebar.button("Save Configuration"):
 # Main Content
 st.title("🤖 Binance Day Trading Bot")
 
-col1, col2 = st.columns(2)
+# Tabs
+tab1, tab2 = st.tabs(["Overview", "Audit Logs"])
 
-with col1:
-    st.subheader("Recent Trades")
-    if db_connected:
-        trades = db.get_trades(limit=20)
-        if trades:
-            df_trades = pd.DataFrame(trades)
-            # Convert decimal to float for display
-            df_trades['price'] = df_trades['price'].astype(float)
-            df_trades['amount'] = df_trades['amount'].astype(float)
-            # Fix: Ensure timestamp is numeric
-            df_trades['timestamp'] = pd.to_numeric(df_trades['timestamp'])
-            df_trades['timestamp'] = pd.to_datetime(df_trades['timestamp'], unit='ms')
-            
-            st.dataframe(df_trades[['timestamp', 'symbol', 'action', 'price', 'amount', 'algo']])
+with tab1:
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Recent Trades")
+        if db_connected:
+            trades = db.get_trades(limit=20)
+            if trades:
+                df_trades = pd.DataFrame(trades)
+                # Convert decimal to float for display
+                df_trades['price'] = df_trades['price'].astype(float)
+                df_trades['amount'] = df_trades['amount'].astype(float)
+                # Fix: Ensure timestamp is numeric
+                df_trades['timestamp'] = pd.to_numeric(df_trades['timestamp'])
+                df_trades['timestamp'] = pd.to_datetime(df_trades['timestamp'], unit='ms')
+                
+                st.dataframe(df_trades[['timestamp', 'symbol', 'action', 'price', 'amount', 'algo']])
+            else:
+                st.info("No trades found.")
         else:
-            st.info("No trades found.")
-    else:
-        st.warning("DB Not Connected")
+            st.warning("DB Not Connected")
+    
+    with col2:
+        st.subheader("Performance / Stats")
+        st.markdown("Total PnL: **$0.00** (Not Implemented yet in data)")
+        
+        st.markdown("---")
+        st.subheader("Price Analysis")
+        
+        if db_connected:
+            # Symbol Selector
+            symbols = config['trading']['symbols']
+            selected_symbol = st.selectbox("Select Symbol", symbols)
+            
+            # Date Range / Limit selector
+            limit = st.slider("History Check (datapoints)", 50, 500, 200)
+            
+            if st.button("Load Graph"):
+                with st.spinner("Fetching data..."):
+                    try:
+                        prices = db.get_price_history(selected_symbol, limit=limit)
+                        
+                        if prices:
+                            df = pd.DataFrame(prices)
+                            df['price'] = df['price'].astype(float)
+                            df['timestamp'] = pd.to_numeric(df['timestamp'])
+                            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+                            df = df.set_index('timestamp')
+                            
+                            # Calculate Indicators on the fly
+                            import ta
+                            
+                            ma_params = config['trading']['active_strategies']['MA_Crossover']['params']
+                            short_window = ma_params['short_period']
+                            long_window = ma_params['long_period']
+                            
+                            df[f'SMA_{short_window}'] = ta.trend.sma_indicator(df['price'], window=short_window)
+                            df[f'SMA_{long_window}'] = ta.trend.sma_indicator(df['price'], window=long_window)
+                            
+                            chart_data = df[['price', f'SMA_{short_window}', f'SMA_{long_window}']]
+                            
+                            st.line_chart(chart_data)
+                            
+                            # Show latest values
+                            latest = df.iloc[-1]
+                            st.metric("Latest Price", f"${latest['price']:.2f}")
+                            st.text(f"SMA {short_window}: {latest[f'SMA_{short_window}']:.2f}")
+                            st.text(f"SMA {long_window}: {latest[f'SMA_{long_window}']:.2f}")
+                            
+                        else:
+                            st.warning(f"No price data found for {selected_symbol}.")
+                            
+                    except Exception as e:
+                        st.error(f"Error loading graph: {e}")
+        else:
+            st.warning("DB Not Connected - Cannot plot graphs.")
 
-with col2:
-    st.subheader("Performance / Stats")
-    st.markdown("Total PnL: **$0.00** (Not Implemented yet in data)")
-    
-    st.markdown("---")
-    st.subheader("Price Analysis")
-    
+with tab2:
+    st.subheader("Audit Logs (Signals & Orders)")
     if db_connected:
-        # Symbol Selector
-        # Ideally fetch unique symbols from DB or config
-        symbols = config['trading']['symbols']
-        selected_symbol = st.selectbox("Select Symbol", symbols)
+        mode = config['trading'].get('mode', 'LIVE')
+        logs = db.get_audit_logs(limit=100, mode=mode)
         
-        # Date Range / Limit selector
-        limit = st.slider("History Check (datapoints)", 50, 500, 200)
-        
-        if st.button("Load Graph"):
-            with st.spinner("Fetching data..."):
-                try:
-                    prices = db.get_price_history(selected_symbol, limit=limit)
-                    
-                    if prices:
-                        df = pd.DataFrame(prices)
-                        df['price'] = df['price'].astype(float)
-                        # Fix: Ensure timestamp is numeric (handle Decimal/String from DB)
-                        df['timestamp'] = pd.to_numeric(df['timestamp'])
-                        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                        df = df.set_index('timestamp')
-                        
-                        # Calculate Indicators on the fly
-                        import ta
-                        
-                        # Moving Averages (matching config if possible, or generic)
-                        # We use the defaults from config for the 'MA_Crossover' strategy
-                        ma_params = config['trading']['active_strategies']['MA_Crossover']['params']
-                        short_window = ma_params['short_period']
-                        long_window = ma_params['long_period']
-                        
-                        df[f'SMA_{short_window}'] = ta.trend.sma_indicator(df['price'], window=short_window)
-                        df[f'SMA_{long_window}'] = ta.trend.sma_indicator(df['price'], window=long_window)
-                        
-                        # Filter down to relevant columns for clean chart
-                        chart_data = df[['price', f'SMA_{short_window}', f'SMA_{long_window}']]
-                        
-                        st.line_chart(chart_data)
-                        
-                        # Show latest values
-                        latest = df.iloc[-1]
-                        st.metric("Latest Price", f"${latest['price']:.2f}")
-                        st.text(f"SMA {short_window}: {latest[f'SMA_{short_window}']:.2f}")
-                        st.text(f"SMA {long_window}: {latest[f'SMA_{long_window}']:.2f}")
-                        
-                    else:
-                        st.warning(f"No price data found for {selected_symbol}.")
-                        
-                except Exception as e:
-                    st.error(f"Error loading graph: {e}")
-    else:
-        st.warning("DB Not Connected - Cannot plot graphs.")
+        if logs:
+            df_audit = pd.DataFrame(logs)
+            
+            # Process Columns
+            # Ensure required columns exist even if some rows miss them
+            desired_cols = ['timestamp', 'signal_id', 'action', 'symbol', 'side', 'price', 'cause', 'details']
+            for c in desired_cols:
+                if c not in df_audit.columns:
+                    df_audit[c] = None
+            
+            # Format Timestamp
+            df_audit['timestamp'] = pd.to_numeric(df_audit['timestamp'])
+            df_audit['timestamp'] = pd.to_datetime(df_audit['timestamp'], unit='ms')
+            
+            # Format Price
+            df_audit['price'] = df_audit['price'].astype(float)
+            
+            # Reorder
+            df_audit = df_audit[desired_cols]
+            
+            # Display
+            st.dataframe(
+                df_audit,
+                column_config={
+                    "timestamp": st.column_config.DatetimeColumn("Time", format="D MMM, HH:mm:ss"),
+                    "signal_id": st.column_config.TextColumn("Signal ID", width="medium"),
+                    "price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                    "details": st.column_config.Column("Details", width="large")
+                },
+                use_container_width=True
+            )
+        else:
+            st.info("No audit logs found.")
 
 st.markdown("---")
 st.markdown("### System Logs")

@@ -30,7 +30,88 @@ class DynamoManager:
         self.test_positions_table = self.dynamodb.Table(self.table_names.get('test_positions', 'test_positions'))
         self.test_orders_table = self.dynamodb.Table(self.table_names.get('test_orders', 'test_orders'))
         self.test_account_table = self.dynamodb.Table(self.table_names.get('test_account', 'test_account'))
+        
+        # Audit Logs
+        self.audit_table = self.dynamodb.Table(self.table_names.get('audit', 'audit_logs'))
+        self.test_audit_table = self.dynamodb.Table(self.table_names.get('test_audit', 'test_audit_logs'))
+        self.counters_table = self.dynamodb.Table(self.table_names.get('counters', 'TradingBot_Counters'))
 
+    def get_next_sequence(self, name):
+        """
+        Get next sequence number from atomic counter.
+        Returns integer.
+        """
+        try:
+            response = self.counters_table.update_item(
+                Key={'counter_name': name},
+                UpdateExpression="ADD current_value :inc",
+                ExpressionAttributeValues={':inc': 1},
+                ReturnValues="UPDATED_NEW"
+            )
+            return int(response['Attributes']['current_value'])
+        except Exception as e:
+            print(f"Error getting sequence {name}: {e}")
+            return int(time.time()) # Fallback to timestamp if fails
+
+    def log_audit(self, action, cause, details, mode, price=None, side=None, signal_id=None):
+        """
+        Log an audit event.
+        """
+        try:
+            table = self.test_audit_table if mode == "TEST" else self.audit_table
+            timestamp = int(time.time() * 1000)
+            
+            item = {
+                'log_id': str(uuid.uuid4()),
+                'timestamp': timestamp,
+                'action': action,
+                'cause': cause,
+                'details': details or {}
+            }
+            
+            # Additional structured fields
+            if price: 
+                item['price'] = Decimal(str(price))
+            if side: 
+                item['side'] = side
+            if signal_id: 
+                item['signal_id'] = signal_id
+            
+            # Also extract from details if not passed explicitly but present (fallback)
+            if 'symbol' in details:
+                item['symbol'] = details['symbol']
+            if not price and 'price' in details:
+                item['price'] = Decimal(str(details['price']))
+                
+            # Sanitize details (convert floats to Decimals)
+            sanitized_details = {}
+            for k, v in details.items():
+                if isinstance(v, float):
+                    sanitized_details[k] = Decimal(str(v))
+                else:
+                    sanitized_details[k] = v
+            item['details'] = sanitized_details
+            
+            table.put_item(Item=item)
+        except Exception as e:
+            print(f"Error logging audit: {e}")
+
+    def get_audit_logs(self, limit=50, mode="LIVE"):
+        """
+        Fetch recent audit logs.
+        """
+        try:
+            table = self.test_audit_table if mode == "TEST" else self.audit_table
+            # Scan might be slow if table grows, but ok for MVP. 
+            # Ideally use Index on timestamp.
+            response = table.scan() # Fetch all to sort correctly (Limit on scan truncates arbitrary items)
+            items = response.get('Items', [])
+            sorted_items = sorted(items, key=lambda x: x['timestamp'], reverse=True)
+            return sorted_items[:limit]
+        except Exception as e:
+            print(f"Error fetching audit logs: {e}")
+            return []
+            
     def log_trade(self, trade_data):
         """
         Logs a trade to DynamoDB.

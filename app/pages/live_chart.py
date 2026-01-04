@@ -149,11 +149,11 @@ if manual_trading_enabled:
                         if active_pos['side'] == 'short' and enable_flip:
                             # Opposite position - flip it!
                             st.sidebar.info("🔄 Flipping SHORT → BUY...")
-                            close_ok = pm.close_position_immediate(active_pos['position_id'], current_price, 'flip')
+                            close_ok = pm.close_position_immediate(active_pos['position_id'], current_price, 'flip', signal_id=manual_id)
                             if close_ok:
                                 amount = pm.calculate_position_size(symbol, current_price)
                                 if amount:
-                                    order = pm.place_limit_order(symbol, 'buy', current_price, amount)
+                                    order = pm.place_limit_order(symbol, 'buy', current_price, amount, signal_id=manual_id)
                                     if order:
                                         db.log_signal({'symbol': symbol, 'signal': 'BUY', 'algo': 'MANUAL', 'price': current_price, 'timestamp': int(time.time() * 1000)})
                                         st.sidebar.success(f"✅ Position flipped! BUY @ ${current_price:.2f}")
@@ -167,7 +167,7 @@ if manual_trading_enabled:
                         # No position - place normally
                         amount = pm.calculate_position_size(symbol, current_price)
                         if amount:
-                            order = pm.place_limit_order(symbol, 'buy', current_price, amount)
+                            order = pm.place_limit_order(symbol, 'buy', current_price, amount, signal_id=manual_id)
                             if order:
                                 db.log_signal({'symbol': symbol, 'signal': 'BUY', 'algo': 'MANUAL', 'price': current_price, 'timestamp': int(time.time() * 1000)})
                                 st.sidebar.success(f"✅ BUY order placed @ ${current_price:.2f}")
@@ -196,6 +196,23 @@ if manual_trading_enabled:
                 if latest_items:
                     current_price = float(latest_items[0]['close'])
                     
+                    # Generate Manual ID
+                    try:
+                        seq = db.get_next_sequence('manual_id')
+                        manual_id = f"M{seq:04d}"
+                        
+                        db.log_audit(
+                            action='MANUAL_TRIGGER',
+                            cause='SELL Button',
+                            details={'symbol': symbol, 'price': current_price},
+                            mode=mode,
+                            price=current_price,
+                            side='SELL',
+                            signal_id=manual_id
+                        )
+                    except:
+                        manual_id = None
+                    
                     exchange_class = getattr(ccxt, config['exchange']['id'])
                     exchange = exchange_class({
                         'apiKey': os.getenv('BINANCE_API_KEY'),
@@ -218,11 +235,11 @@ if manual_trading_enabled:
                         if active_pos['side'] == 'long' and enable_flip:
                             # Opposite position - flip it!
                             st.sidebar.info("🔄 Flipping LONG → SELL...")
-                            close_ok = pm.close_position_immediate(active_pos['position_id'], current_price, 'flip')
+                            close_ok = pm.close_position_immediate(active_pos['position_id'], current_price, 'flip', signal_id=manual_id)
                             if close_ok:
                                 amount = pm.calculate_position_size(symbol, current_price)
                                 if amount:
-                                    order = pm.place_limit_order(symbol, 'sell', current_price, amount)
+                                    order = pm.place_limit_order(symbol, 'sell', current_price, amount, signal_id=manual_id)
                                     if order:
                                         db.log_signal({'symbol': symbol, 'signal': 'SELL', 'algo': 'MANUAL', 'price': current_price, 'timestamp': int(time.time() * 1000)})
                                         st.sidebar.success(f"✅ Position flipped! SELL @ ${current_price:.2f}")
@@ -236,7 +253,7 @@ if manual_trading_enabled:
                         # No position - place normally
                         amount = pm.calculate_position_size(symbol, current_price)
                         if amount:
-                            order = pm.place_limit_order(symbol, 'sell', current_price, amount)
+                            order = pm.place_limit_order(symbol, 'sell', current_price, amount, signal_id=manual_id)
                             if order:
                                 db.log_signal({'symbol': symbol, 'signal': 'SELL', 'algo': 'MANUAL', 'price': current_price, 'timestamp': int(time.time() * 1000)})
                                 st.sidebar.success(f"✅ SELL order placed @ ${current_price:.2f}")
