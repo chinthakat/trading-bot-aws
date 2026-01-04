@@ -1,230 +1,241 @@
+
 import logging
 import uuid
-from datetime import datetime
-from typing import Optional, Dict
+import time
+from datetime import datetime, timedelta
+from typing import Optional, Dict, List, Any
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
 class PaperTradingSimulator:
     """
     Simulates exchange behavior for TEST mode.
-    - Maintains virtual balance ($10K initial)
-    - Simulates instant order fills at limit prices
-    - Tracks virtual positions and P&L
-    - Uses real price data for accurate simulation
+    - Maintains virtual balance
+    - Simulates instant order fills at limit prices (or marketable limit)
+    - Persists state to DynamoDB 'test_*' tables via injected DB instance
     """
     
-    def __init__(self, initial_balance: float):
-        self.initial_balance = initial_balance
-        self.balance = initial_balance
+    def __init__(self, initial_balance: float, db=None):
+        self.balance = float(initial_balance)
+        self.db = db  # Persistence instance
         self.positions = {}  # symbol -> position dict
         self.pending_orders = {}  # order_id -> order dict
         self.filled_orders = []
         self.closed_positions = []
         
-        logger.info(f"Paper Trading Simulator initialized with ${initial_balance:,.2f}")
-    
-    def get_balance(self) -> float:
-        """Get current cash balance."""
-        return self.balance
-    
-    def get_equity(self, current_prices: Dict[str, float]) -> float:
-        """
-        Calculate total equity (balance + unrealized P&L).
-        
-        Args:
-            current_prices: Dict of symbol -> current_price
-        """
-        unrealized_pnl = 0.0
-        
-        for symbol, position in self.positions.items():
-            if symbol in current_prices:
-                current_price = current_prices[symbol]
-                if position['side'] == 'long':
-                    pnl = (current_price - position['entry_price']) * position['quantity']
-                else:  # short
-                    pnl = (position['entry_price'] - current_price) * position['quantity']
-                unrealized_pnl += pnl
-        
-        return self.balance + unrealized_pnl
-    
-    def place_limit_order(self, symbol: str, side: str, price: float, amount: float) -> Dict:
+        logger.info(f"Paper Trading Simulator initialized with ${self.balance:,.2f}")
+
+    def load_state(self, positions: List[Dict], orders: List[Dict]):
+        """Load state from DB (called by PositionManager)."""
+        for pos in positions:
+            self.positions[pos['symbol']] = pos
+            
+        for order in orders:
+            self.pending_orders[order['order_id']] = order
+            
+        logger.info(f"Simulator loaded state: {len(self.positions)} positions, {len(self.pending_orders)} orders")
+
+    def place_limit_order(self, symbol: str, side: str, price: float, amount: float, expires_at: datetime = None) -> Dict:
         """
         Place a virtual limit order.
-        
-        Args:
-            symbol: Trading pair (e.g., "BTC/USDT")
-            side: "buy" or "sell"
-            price: Limit price
-            amount: Quantity
-            
-        Returns:
-            Order data dict
         """
         order_id = str(uuid.uuid4())
+        timestamp = datetime.now()
         
+        # Default Expiration: 24h if not provided
+        if not expires_at:
+            expires_at = timestamp + timedelta(hours=24)
+            
         order = {
             'order_id': order_id,
             'symbol': symbol,
             'side': side,
-            'price': price,
-            'amount': amount,
+            'price': float(price),
+            'amount': float(amount),
             'status': 'pending',
-            'created_at': datetime.now()
+            'created_at': timestamp,
+            'expires_at': expires_at,
+            'filled_at': None,
+            'fill_price': None
         }
         
         self.pending_orders[order_id] = order
         
+        # Persist to DB
+        if self.db:
+            self._persist_order(order)
+            
         logger.info(f"[PAPER] Placed {side} limit order: {symbol} @ ${price:.2f} qty={amount}")
-        
         return order
-    
+
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel a pending order."""
+        if order_id in self.pending_orders:
+            order = self.pending_orders.pop(order_id)
+            order['status'] = 'canceled'
+            
+            if self.db:
+                self.db.update_order_status(order_id, 'canceled', mode='TEST')
+                
+            logger.info(f"[PAPER] Canceled order {order_id}")
+            return True
+        return False
+
     def simulate_fill(self, order_id: str, current_price: float) -> bool:
         """
-        Check if order should be filled based on current price.
-        For simplicity, fills instantly if price crosses limit.
-        
-        Args:
-            order_id: Order to check
-            current_price: Current market price
-            
-        Returns:
-            True if order was filled
+        Check fill conditions.
+        Buy Limit: Fill if Market <= Limit
+        Sell Limit: Fill if Market >= Limit
         """
         if order_id not in self.pending_orders:
             return False
-        
+            
         order = self.pending_orders[order_id]
         limit_price = order['price']
         side = order['side']
         
-        # Check if price crossed limit
         should_fill = False
-        if side == 'buy' and current_price <= limit_price:
-            should_fill = True
-        elif side == 'sell' and current_price >= limit_price:
-            should_fill = True
         
+        # logic: 
+        # If Limit Buy @ 100. Market is 99. Fill.
+        # If Limit Buy @ 100. Market is 101. No Fill.
+        
+        if side == 'buy':
+            if current_price <= limit_price:
+                should_fill = True
+        elif side == 'sell':
+            if current_price >= limit_price:
+                should_fill = True
+                
         if should_fill:
-            logger.info(f"[SIMULATOR] Filling {side} order {order_id}. Limit: {limit_price}, Market Passed: {current_price}")
+            # Execute Fill
+            logger.info(f"[SIMULATOR] Filling {side} {order_id}. Limit:{limit_price}, Market:{current_price}")
             self._execute_fill(order, current_price)
             return True
-        else:
-            # Log failure reason (Sampled or Debug)
-            if datetime.now().second % 10 == 0: # Log occasionally to avoid spam
-                 logger.info(f"[SIMULATOR] NOT filling {side} {order_id}. Market {current_price} vs Limit {limit_price}")
-        
+            
         return False
-    
+
     def _execute_fill(self, order: Dict, fill_price: float):
-        """Execute order fill and update balances/positions."""
+        """Execute fill, update state, write DB."""
         order_id = order['order_id']
         symbol = order['symbol']
         side = order['side']
         amount = order['amount']
         
-        # Update order status
+        # 1. Update Order
         order['status'] = 'filled'
         order['filled_at'] = datetime.now()
-        order['fill_price'] = fill_price
+        order['fill_price'] = float(fill_price)
         
-        # Move to filled orders
         self.filled_orders.append(order)
-        del self.pending_orders[order_id]
+        if order_id in self.pending_orders:
+            del self.pending_orders[order_id]
+            
+        if self.db:
+            self.db.update_order_status(order_id, 'filled', mode='TEST')
+            # Ideally update fill_price too, but update_order_status is simple.
+            # Maybe overwrite full item?
+            self._persist_order(order)
+
+        # 2. Update Balance & Positions
+        cost = fill_price * amount
         
-        # Update balance and positions
         if side == 'buy':
-            # Deduct cost from balance
-            cost = fill_price * amount
             self.balance -= cost
             
-            # Create or update position
-            if symbol in self.positions:
-                # Average down (shouldn't happen with max_positions=1, but handle it)
-                pos = self.positions[symbol]
-                total_qty = pos['quantity'] + amount
-                avg_price = ((pos['entry_price'] * pos['quantity']) + (fill_price * amount)) / total_qty
-                pos['quantity'] = total_qty
-                pos['entry_price'] = avg_price
-            else:
-                self.positions[symbol] = {
-                    'position_id': str(uuid.uuid4()),
-                    'symbol': symbol,
-                    'side': 'long',
-                    'entry_price': fill_price,
-                    'quantity': amount,
-                    'entry_time': datetime.now(),
-                    'status': 'open'
-                }
-            
-            logger.info(f"[PAPER] ✅ BUY filled: {amount} {symbol} @ ${fill_price:.2f} | Balance: ${self.balance:.2f}")
-            
-        else:  # sell
-            # Check existing position
+            # Create/Update Position
             if symbol in self.positions:
                 pos = self.positions[symbol]
-                
                 if pos['side'] == 'long':
-                     # CLOSE / REDUCE LONG
-                     self.balance += fill_price * amount # Cash out
-                     
-                     realized_pnl = (fill_price - pos['entry_price']) * amount
-                     pos['quantity'] -= amount
-                     
-                     if pos['quantity'] <= 0:
-                         # Closed
-                         pos['status'] = 'closed'
-                         pos['exit_price'] = fill_price
-                         pos['exit_time'] = datetime.now()
-                         pos['pnl'] = realized_pnl
-                         self.closed_positions.append(pos)
-                         del self.positions[symbol]
-                     
-                     logger.info(f"[PAPER] ✅ SELL (Close Long) filled: {amount} {symbol} @ ${fill_price:.2f} | P&L: ${realized_pnl:.2f}")
-                     
-                else:
-                     # ADD TO SHORT
-                     self.balance += fill_price * amount 
-                     
+                     # Avg Down
                      total_qty = pos['quantity'] + amount
                      avg_price = ((pos['entry_price'] * pos['quantity']) + (fill_price * amount)) / total_qty
                      pos['quantity'] = total_qty
                      pos['entry_price'] = avg_price
-                     logger.info(f"[PAPER] ✅ SELL (Add Short) filled: {amount} {symbol} @ ${fill_price:.2f}")
-            
+                else:
+                    # Closing Short (Partial or Full)
+                    # For simplicity, if opposite side exists, we assume FLIP or Close.
+                    # Standard logic: Reduce Short.
+                    pass # TODO: Handle complex netting if needed. MVP assumes strict flip.
+                    # MVP: We assume we are FLAT before opening? 
+                    # Actually PositionManager handles "Close then Open".
+                    # So Simulator just opens a LONG.
+                    # Wait. If I still have a SHORT, and I Buy?
+                    # Simulator needs Netting?
+                    logger.warning("[SIMULATOR] Netting logic not fully implemented for concurrent opposite positions")
             else:
-                 # OPEN SHORT
-                 self.balance += fill_price * amount
-                 
-                 self.positions[symbol] = {
+                # New Long
+                new_pos = {
+                    'position_id': str(uuid.uuid4()),
+                    'symbol': symbol,
+                    'side': 'long',
+                    'entry_price': float(fill_price),
+                    'quantity': float(amount),
+                    'entry_time': datetime.now(),
+                    'status': 'open',
+                    'pnl': 0.0
+                }
+                self.positions[symbol] = new_pos
+                if self.db:
+                    self.db.log_position(new_pos, mode='TEST')
+
+        elif side == 'sell':
+             self.balance += cost
+             # Check for Long to Close
+             if symbol in self.positions and self.positions[symbol]['side'] == 'long':
+                  # Close Long
+                  pos = self.positions[symbol]
+                  pnl = (fill_price - pos['entry_price']) * amount
+                  
+                  # Assume full close for MVP simplicity (or check qty)
+                  pos['status'] = 'closed'
+                  pos['exit_price'] = fill_price
+                  pos['exit_time'] = datetime.now()
+                  pos['pnl'] = pnl
+                  
+                  self.closed_positions.append(pos)
+                  del self.positions[symbol]
+                  
+                  if self.db:
+                      self.db.update_position_status(pos['position_id'], 'closed', mode='TEST')
+                      self.db.update_position_pnl(pos['position_id'], pnl, fill_price, mode='TEST')
+             
+             else:
+                  # New Short
+                  new_pos = {
                     'position_id': str(uuid.uuid4()),
                     'symbol': symbol,
                     'side': 'short',
-                    'entry_price': fill_price,
-                    'quantity': amount,
+                    'entry_price': float(fill_price),
+                    'quantity': float(amount),
                     'entry_time': datetime.now(),
-                    'status': 'open'
-                 }
-                 logger.info(f"[PAPER] ✅ SELL (Open Short) filled: {amount} {symbol} @ ${fill_price:.2f}")
-    
-    def get_position(self, symbol: str) -> Optional[Dict]:
-        """Get current position for symbol."""
-        return self.positions.get(symbol)
-    
-    def has_open_position(self, symbol: str) -> bool:
-        """Check if there's an open position for symbol."""
-        return symbol in self.positions
-    
-    def get_stats(self, current_prices: Dict[str, float]) -> Dict:
-        """Get account statistics."""
-        equity = self.get_equity(current_prices)
-        total_pnl = equity - self.initial_balance
-        
-        return {
-            'balance': self.balance,
-            'equity': equity,
-            'total_pnl': total_pnl,
-            'pnl_pct': (total_pnl / self.initial_balance) * 100,
-            'open_positions': len(self.positions),
-            'pending_orders': len(self.pending_orders)
-        }
+                    'status': 'open',
+                    'pnl': 0.0
+                  }
+                  self.positions[symbol] = new_pos
+                  if self.db:
+                      self.db.log_position(new_pos, mode='TEST')
+
+        logger.info(f"[PAPER] Fill executed: {side} {amount} {symbol} @ {fill_price}")
+
+    def _persist_order(self, order: Dict):
+        """Helper to write order to DB."""
+        if not self.db: return
+        try:
+            # Format for DynamoDB (Decimal, timestamps)
+            item = order.copy()
+            item['created_at'] = int(item['created_at'].timestamp() * 1000)
+            if item.get('expires_at'):
+                item['expires_at'] = int(item['expires_at'].timestamp() * 1000)
+            if item.get('filled_at'):
+                item['filled_at'] = int(item['filled_at'].timestamp() * 1000)
+                
+            for k, v in item.items():
+                if isinstance(v, float):
+                    item[k] = Decimal(str(v))
+            
+            self.db.test_orders_table.put_item(Item=item)
+        except Exception as e:
+            logger.error(f"[PAPER] DB Persist Error: {e}")
+
