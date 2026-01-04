@@ -28,6 +28,10 @@ class PositionManager:
         self.max_positions = config.get('max_positions', 1)
         self.use_min_quantity = config.get('use_min_quantity', True)
         self.order_ttl_seconds = config.get('order_ttl', 300)  # 5 minutes
+        self.commission_rate = config.get('commission_rate', 0.001)
+        self.risk_per_trade = config.get("risk_per_trade", 3.0)
+        self.sl_pct = config.get("sl_pct", 0.02)
+        self.tp_pct = config.get("tp_pct", 0.04)
         
         # State
         self.pending_orders = {} # Local view of pending orders
@@ -47,7 +51,7 @@ class PositionManager:
                 db.update_test_account_balance(starting_balance)
             
             # Instantiate Simulator with DB INJECTION
-            self.simulator = PaperTradingSimulator(starting_balance, db=self.db)
+            self.simulator = PaperTradingSimulator(starting_balance, db=self.db, commission_rate=self.commission_rate)
             self.positions_table_name = 'test_positions'
             self.orders_table_name = 'test_orders'
             logger.info(f"PositionManager in TEST mode with ${starting_balance:,.2f} paper balance")
@@ -124,7 +128,40 @@ class PositionManager:
             
             if self.use_min_quantity:
                 return min_amount
-            return min_amount
+            
+            # Risk-Based Sizing
+            # 1. Determine Account Balance
+            if self.mode == "TEST":
+                acct = self.db.get_test_account_balance()
+                balance = float(acct['balance']) if acct else 10000.0
+            else:
+                # Live Balance logic (omitted for MVP, assume fixed or fetch)
+                balance = 1000.0 # Placeholder for LIVE
+            
+            # 2. Calculate Risk Amount (e.g. 3% of Equity)
+            risk_amount = balance * (self.risk_per_trade / 100.0)
+            
+            # 3. Calculate Risk Per Unit (Entry - SL)
+            # Long: Price * sl_pct
+            risk_per_unit = price * self.sl_pct
+            
+            if risk_per_unit <= 0:
+                return min_amount
+                
+            qty = risk_amount / risk_per_unit
+            
+            # 4. Cap at Account Balance (Spot Logic)
+            max_qty_cost = balance / price
+            if qty > max_qty_cost:
+                qty = max_qty_cost * 0.99  # 99% of balance to be safe with fees
+                
+            # 5. Enforce Min/Max/Precision
+            # TODO: Add precision check
+            
+            logger.info(f"Calculated Size: Bal=${balance}, Risk=${risk_amount:.2f}, Qty={qty:.6f}")
+            
+            return max(qty, min_amount)
+
         except Exception as e:
             logger.error(f"Error calculating position size: {e}")
             return None
@@ -141,6 +178,18 @@ class PositionManager:
             offset_pct = 0.001 
             limit_price = current_price * (1 + offset_pct) if side == 'buy' else current_price * (1 - offset_pct)
             
+            # Calculate SL/TP if not provided
+            sl_price = None
+            tp_price = None
+            if order_type == 'entry':
+                if side == 'buy': # Long
+                     sl_price = limit_price * (1 - self.sl_pct)
+                     tp_price = limit_price * (1 + self.tp_pct)
+                else: # Short (not fully supported yet but logic implies)
+                     sl_price = limit_price * (1 + self.sl_pct)
+                     tp_price = limit_price * (1 - self.tp_pct)
+
+            
             if self.mode == "TEST":
                 # Simulator handles DB persistence internally now!
                 order = self.simulator.place_limit_order(
@@ -150,6 +199,8 @@ class PositionManager:
                 
                 # Enrich with metadata NOT stored in DB core schema but useful for local logic
                 order['type'] = order_type
+                if sl_price: order['stop_loss'] = sl_price
+                if tp_price: order['take_profit'] = tp_price
                 if signal_id: order['signal_id'] = signal_id
                 
                 self.pending_orders[order['order_id']] = order
@@ -267,7 +318,9 @@ class PositionManager:
             'quantity': float(exchange_order['filled']),
             'entry_time': datetime.now(),
             'status': 'open',
-            'pnl': 0.0
+            'pnl': 0.0,
+            'stop_loss': order_data.get('stop_loss'),
+            'take_profit': order_data.get('take_profit')
         }
         self.current_position = position
         self.db.log_position(position, self.mode)
@@ -335,7 +388,10 @@ class PositionManager:
             amount = pos['quantity']
             
             # EXIT SIDE
-            exit_side = 'sell' if side == 'buy' else 'buy'
+            if side in ['buy', 'long']:
+                exit_side = 'sell'
+            else:
+                exit_side = 'buy'
             
             # AGGRESSIVE PRICE (1% buffer)
             # Buy Exit: 1.01 * Price
@@ -360,7 +416,10 @@ class PositionManager:
             # 1. New Orders
             table = self.db.test_orders_table if self.mode=="TEST" else self.db.orders_table
             resp = table.scan(FilterExpression='#st = :pending', ExpressionAttributeNames={'#st':'status'}, ExpressionAttributeValues={':pending':'pending'})
-            for o in resp.get('Items', []):
+            new_orders = resp.get('Items', [])
+            if new_orders:
+                logger.info(f"Sync found {len(new_orders)} new pending orders")
+            for o in new_orders:
                  if o['order_id'] not in self.pending_orders:
                      # Import logic using sanitize
                      clean_o = self._sanitize_from_db(o)
@@ -391,6 +450,37 @@ class PositionManager:
              pos = self.current_position
              qty = pos['quantity']
              entry = pos['entry_price']
-             pnl = (current_price - entry)*qty if pos['side'] == 'long' else (entry - current_price)*qty
-             pos['pnl'] = pnl
-             self.db.update_position_pnl(pos['position_id'], pnl, current_price, self.mode)
+             
+             # Gross PnL
+             gross_pnl = (current_price - entry)*qty if pos['side'] == 'long' else (entry - current_price)*qty
+             
+             # Net PnL (Deduct Entry fee + Est Exit fee)
+             entry_comm = pos.get('entry_commission', 0.0)
+             est_exit_comm = (current_price * qty) * self.commission_rate
+             
+             net_pnl = gross_pnl - entry_comm - est_exit_comm
+             
+             pos['pnl'] = net_pnl
+             self.db.update_position_pnl(pos['position_id'], net_pnl, current_price, self.mode)
+             
+             # Check SL/TP
+             sl = pos.get('stop_loss')
+             tp = pos.get('take_profit')
+             
+             if sl or tp:
+                 hit_sl = False
+                 hit_tp = False
+                 
+                 if pos['side'] == 'long':
+                     if sl and current_price <= float(sl): hit_sl = True
+                     if tp and current_price >= float(tp): hit_tp = True
+                 else: # short
+                     if sl and current_price >= float(sl): hit_sl = True
+                     if tp and current_price <= float(tp): hit_tp = True
+                     
+                 if hit_sl:
+                     logger.info(f"Stop Loss triggered for {symbol} @ {current_price} (SL: {sl})")
+                     self.close_position_immediate(pos['position_id'], current_price, reason="stop_loss")
+                 elif hit_tp:
+                     logger.info(f"Take Profit triggered for {symbol} @ {current_price} (TP: {tp})")
+                     self.close_position_immediate(pos['position_id'], current_price, reason="take_profit")

@@ -32,7 +32,7 @@ def render_account_summary(db, mode, config):
 
     equity = current_balance + pnl_stats['open_pnl']
     
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric("Total Equity", f"${equity:,.4f}", delta=f"{pnl_stats['total_pnl']:,.4f}")
@@ -42,6 +42,8 @@ def render_account_summary(db, mode, config):
         st.metric("Open P&L", f"${pnl_stats['open_pnl']:,.4f}", 
              delta_color="normal" if pnl_stats['open_pnl'] >= 0 else "inverse")
     with col4:
+        st.metric("Total Fees", f"${pnl_stats.get('total_fees', 0.0):,.4f}")
+    with col5:
         win_rate = pnl_stats['win_rate'] * 100
         st.metric("Win Rate", f"{win_rate:.1f}%", help=f"{pnl_stats['win_count']}W - {pnl_stats['loss_count']}L")
         
@@ -76,6 +78,9 @@ def render_positions_table(db, mode):
             
             df = df.sort_values('entry_time', ascending=False)
             
+            # Calculate Fees Column
+            df['fees'] = df.apply(lambda r: float(r.get('entry_commission', 0)) + float(r.get('exit_commission', 0)), axis=1)
+
             # Include 'request_close' in open positions view
             open_pos = df[df['status'].isin(['open', 'request_close'])].copy()
             closed_pos = df[df['status'] == 'closed']
@@ -91,7 +96,7 @@ def render_positions_table(db, mode):
                 if 'take_profit' not in open_pos.columns: open_pos['take_profit'] = 0.0
                 
                 # Reorder
-                cols = ['Close', 'symbol', 'side', 'entry_price', 'current_price', 'quantity', 'pnl', 'stop_loss', 'take_profit', 'entry_time']
+                cols = ['Close', 'symbol', 'side', 'entry_price', 'current_price', 'quantity', 'pnl', 'fees', 'stop_loss', 'take_profit', 'entry_time']
                 
                 # Check column existence (current_price/pnl might be missing if new)
                 cols = [c for c in cols if c in open_pos.columns or c == 'Close']
@@ -102,6 +107,7 @@ def render_positions_table(db, mode):
                     "stop_loss": st.column_config.NumberColumn("Stop Loss", help="Edit to update"),
                     "take_profit": st.column_config.NumberColumn("Take Profit", help="Edit to update"),
                     "pnl": st.column_config.NumberColumn("PnL", format="$%.4f"),
+                    "fees": st.column_config.NumberColumn("Fees", format="$%.4f"),
                     "entry_time": st.column_config.DatetimeColumn("Entry Time", format="D MMM, HH:mm"),
                     "status": st.column_config.TextColumn("Status")
                 }
@@ -114,7 +120,7 @@ def render_positions_table(db, mode):
                     open_pos[cols],
                     hide_index=True,
                     column_config=column_config,
-                    disabled=['symbol', 'side', 'entry_price', 'current_price', 'quantity', 'pnl', 'entry_time', 'status'],
+                    disabled=['symbol', 'side', 'entry_price', 'current_price', 'quantity', 'pnl', 'fees', 'entry_time', 'status'],
                     key=f"positions_editor_{mode}"
                 )
                 
@@ -174,7 +180,7 @@ def render_positions_table(db, mode):
             # --- Closed Positions ---
             st.markdown("### 📜 Closed Positions")
             if not closed_pos.empty:
-                cols = ['symbol', 'side', 'entry_price', 'exit_price', 'quantity', 'pnl', 'entry_time', 'exit_time']
+                cols = ['symbol', 'side', 'entry_price', 'exit_price', 'quantity', 'pnl', 'fees', 'entry_time', 'exit_time']
                 if 'pnl' in closed_pos.columns:
                      st.dataframe(closed_pos[cols].style.applymap(
                         lambda v: 'color: green' if (isinstance(v, (int, float)) and v > 0) else 'color: red' if (isinstance(v, (int, float)) and v < 0) else '', 

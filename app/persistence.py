@@ -270,8 +270,13 @@ class DynamoManager:
                 'quantity': Decimal(str(position_data['quantity'])),
                 'entry_time': int(position_data['entry_time'].timestamp() * 1000),
                 'status': position_data['status'],
-                'pnl': Decimal(str(position_data.get('pnl', 0)))
+                'pnl': Decimal(str(position_data.get('pnl', 0))),
+                'entry_commission': Decimal(str(position_data.get('entry_commission', 0))),
+                'stop_loss': Decimal(str(position_data.get('stop_loss', 0))) if position_data.get('stop_loss') else None,
+                'take_profit': Decimal(str(position_data.get('take_profit', 0))) if position_data.get('take_profit') else None
             }
+            # Remove None values
+            item = {k: v for k, v in item.items() if v is not None}
             table.put_item(Item=item)
             print(f"[{mode}] Logged position: {item['position_id']}")
         except ClientError as e:
@@ -428,12 +433,17 @@ class DynamoManager:
             total_pnl = 0
             open_pnl = 0
             closed_pnl = 0
+            total_fees = 0
             win_count = 0
             loss_count = 0
             
             for pos in positions:
                 pnl = float(pos.get('pnl', 0))
                 total_pnl += pnl
+                
+                # Fees
+                fees = float(pos.get('entry_commission', 0)) + float(pos.get('exit_commission', 0))
+                total_fees += fees
                 
                 if pos['status'] == 'open':
                     open_pnl += pnl
@@ -451,11 +461,12 @@ class DynamoManager:
                 'closed_pnl': closed_pnl,
                 'win_count': win_count,
                 'loss_count': loss_count,
-                'win_rate': win_count / (win_count + loss_count) if (win_count + loss_count) > 0 else 0
+                'win_rate': win_count / (win_count + loss_count) if (win_count + loss_count) > 0 else 0,
+                'total_fees': total_fees
             }
         except ClientError as e:
             print(f"Error getting account P&L: {e}")
-            return {'total_pnl': 0, 'open_pnl': 0, 'closed_pnl': 0, 'win_count': 0, 'loss_count': 0, 'win_rate': 0}
+            return {'total_pnl': 0, 'open_pnl': 0, 'closed_pnl': 0, 'win_count': 0, 'loss_count': 0, 'win_rate': 0, 'total_fees': 0}
 
     def get_active_position(self, mode="LIVE"):
         """

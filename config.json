@@ -44,10 +44,14 @@
             }
         },
         "risk_management": {
+            "max_drawdown": 0.15,
             "max_positions": 1,
-            "use_min_quantity": true,
+            "use_min_quantity": false,
             "order_ttl": 300,
-            "max_slippage_pct": 0.5
+            "sl_pct": 0.02,
+            "tp_pct": 0.04,
+            "max_slippage_pct": 0.5,
+            "commission_rate": 0.001
         },
         "manual_trading_enabled": true,
         "enable_position_flip": true

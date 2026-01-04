@@ -16,15 +16,16 @@ class PaperTradingSimulator:
     - Persists state to DynamoDB 'test_*' tables via injected DB instance
     """
     
-    def __init__(self, initial_balance: float, db=None):
+    def __init__(self, initial_balance: float, db=None, commission_rate=0.001):
         self.balance = float(initial_balance)
         self.db = db  # Persistence instance
+        self.commission_rate = float(commission_rate)
         self.positions = {}  # symbol -> position dict
         self.pending_orders = {}  # order_id -> order dict
         self.filled_orders = []
         self.closed_positions = []
         
-        logger.info(f"Paper Trading Simulator initialized with ${self.balance:,.2f}")
+        logger.info(f"Paper Trading Simulator initialized with ${self.balance:,.2f} (Comm: {self.commission_rate*100}%)")
 
     def load_state(self, positions: List[Dict], orders: List[Dict]):
         """Load state from DB (called by PositionManager)."""
@@ -139,10 +140,14 @@ class PaperTradingSimulator:
             self._persist_order(order)
 
         # 2. Update Balance & Positions
+        # 2. Update Balance & Positions
         cost = fill_price * amount
+        commission = cost * self.commission_rate
+        
+        order['commission'] = commission
         
         if side == 'buy':
-            self.balance -= cost
+            self.balance -= (cost + commission)
             
             # Create/Update Position
             if symbol in self.positions:
@@ -150,19 +155,30 @@ class PaperTradingSimulator:
                 if pos['side'] == 'long':
                      # Avg Down
                      total_qty = pos['quantity'] + amount
-                     avg_price = ((pos['entry_price'] * pos['quantity']) + (fill_price * amount)) / total_qty
+                     # Weighted Avg Price
+                     old_val = pos['entry_price'] * pos['quantity']
+                     new_val = fill_price * amount
+                     avg_price = (old_val + new_val) / total_qty
+                     
                      pos['quantity'] = total_qty
                      pos['entry_price'] = avg_price
+                     # Accumulate Entry Comm
+                     pos['entry_commission'] = pos.get('entry_commission', 0.0) + commission
                 else:
                     # Closing Short (Partial or Full)
                     remaining = pos['quantity'] - amount
                     if remaining <= 1e-9: # Epsilon for float comparison
                         # Full Close
-                        pnl = (pos['entry_price'] - fill_price) * pos['quantity'] # Short PnL
+                        # Gross PnL - Entry Comm - Exit Comm
+                        gross_pnl = (pos['entry_price'] - fill_price) * pos['quantity'] # Short PnL
+                        entry_comm = pos.get('entry_commission', 0.0)
+                        net_pnl = gross_pnl - entry_comm - commission
+                        
                         pos['status'] = 'closed'
                         pos['exit_price'] = fill_price
                         pos['exit_time'] = datetime.now()
-                        pos['pnl'] = pnl
+                        pos['pnl'] = net_pnl
+                        pos['exit_commission'] = commission
                         
                         self.closed_positions.append(pos)
                         del self.positions[symbol]
@@ -185,32 +201,39 @@ class PaperTradingSimulator:
                     'quantity': float(amount),
                     'entry_time': datetime.now(),
                     'status': 'open',
-                    'pnl': 0.0
+                    'pnl': 0.0,
+                    'entry_commission': commission,
+                    'stop_loss': order.get('stop_loss'),
+                    'take_profit': order.get('take_profit')
                 }
                 self.positions[symbol] = new_pos
                 if self.db:
                     self.db.log_position(new_pos, mode='TEST')
 
         elif side == 'sell':
-             self.balance += cost
+             self.balance += (cost - commission)
              # Check for Long to Close
              if symbol in self.positions and self.positions[symbol]['side'] == 'long':
                   # Close Long
                   pos = self.positions[symbol]
-                  pnl = (fill_price - pos['entry_price']) * amount
+                  # Gross PnL - Entry Comm - Exit Comm
+                  gross_pnl = (fill_price - pos['entry_price']) * amount
+                  entry_comm = pos.get('entry_commission', 0.0)
+                  net_pnl = gross_pnl - entry_comm - commission
                   
                   # Assume full close for MVP simplicity (or check qty)
                   pos['status'] = 'closed'
                   pos['exit_price'] = fill_price
                   pos['exit_time'] = datetime.now()
-                  pos['pnl'] = pnl
+                  pos['pnl'] = net_pnl
+                  pos['exit_commission'] = commission
                   
                   self.closed_positions.append(pos)
                   del self.positions[symbol]
                   
                   if self.db:
                       self.db.update_position_status(pos['position_id'], 'closed', mode='TEST')
-                      self.db.update_position_pnl(pos['position_id'], pnl, fill_price, mode='TEST')
+                      self.db.update_position_pnl(pos['position_id'], net_pnl, fill_price, mode='TEST')
              
              else:
                   # New Short
@@ -222,13 +245,19 @@ class PaperTradingSimulator:
                     'quantity': float(amount),
                     'entry_time': datetime.now(),
                     'status': 'open',
-                    'pnl': 0.0
+                    'pnl': 0.0,
+                    'entry_commission': commission,
+                    'stop_loss': order.get('stop_loss'),
+                    'take_profit': order.get('take_profit')
                   }
                   self.positions[symbol] = new_pos
                   if self.db:
                       self.db.log_position(new_pos, mode='TEST')
 
         logger.info(f"[PAPER] Fill executed: {side} {amount} {symbol} @ {fill_price}")
+        
+        if self.db:
+             self.db.update_test_account_balance(self.balance)
 
 
     def get_position(self, symbol: str) -> Optional[Dict]:
