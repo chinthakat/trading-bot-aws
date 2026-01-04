@@ -26,7 +26,7 @@ class TestRiskManagement(unittest.TestCase):
         # Mock Balance: $10,000
         db.get_test_account_balance.return_value = {'balance': 10000.0}
         
-        pm = PositionManager(exchange, db, config['risk_management'], mode="TEST")
+        pm = PositionManager(exchange, db, config, mode="TEST")
         
         # Test Case 1: Standard
         # Price = 50,000

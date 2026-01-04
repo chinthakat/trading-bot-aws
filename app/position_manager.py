@@ -25,13 +25,17 @@ class PositionManager:
         self.mode = mode
         
         # Risk Parameters
-        self.max_positions = config.get('max_positions', 1)
-        self.use_min_quantity = config.get('use_min_quantity', True)
-        self.order_ttl_seconds = config.get('order_ttl', 300)  # 5 minutes
-        self.commission_rate = config.get('commission_rate', 0.001)
-        self.risk_per_trade = config.get("risk_per_trade", 3.0)
-        self.sl_pct = config.get("sl_pct", 0.02)
-        self.tp_pct = config.get("tp_pct", 0.04)
+        # Risk Parameters
+        risk_mgmt = config.get('risk_management', {})
+        self.max_positions = risk_mgmt.get('max_positions', 1)
+        self.use_min_quantity = risk_mgmt.get('use_min_quantity', True)
+        self.order_ttl_seconds = risk_mgmt.get('order_ttl', 300)
+        self.commission_rate = risk_mgmt.get('commission_rate', 0.001)
+        self.sl_pct = risk_mgmt.get("sl_pct", 0.02)
+        self.tp_pct = risk_mgmt.get("tp_pct", 0.04)
+        
+        # risk_per_trade might be at root or in risk_mgmt
+        self.risk_per_trade = config.get("risk_per_trade", risk_mgmt.get("risk_per_trade", 3.0))
         
         # State
         self.pending_orders = {} # Local view of pending orders
@@ -149,6 +153,8 @@ class PositionManager:
                 return min_amount
                 
             qty = risk_amount / risk_per_unit
+            
+            logger.info(f"[SIZING] Bal: {balance}, Risk%: {self.risk_per_trade}, RiskAmt: {risk_amount}, Price: {price}, SL%: {self.sl_pct}, Risk/Unit: {risk_per_unit}, CalcQty: {qty}")
             
             # 4. Cap at Account Balance (Spot Logic)
             max_qty_cost = balance / price
