@@ -230,6 +230,11 @@ class PaperTradingSimulator:
 
         logger.info(f"[PAPER] Fill executed: {side} {amount} {symbol} @ {fill_price}")
 
+
+    def get_position(self, symbol: str) -> Optional[Dict]:
+        """Retrieve open position for symbol."""
+        return self.positions.get(symbol)
+        
     def _persist_order(self, order: Dict):
         """Helper to write order to DB."""
         if not self.db: return

@@ -264,7 +264,9 @@ class TradingBot:
             amount = self.position_manager.calculate_position_size(symbol, price)
             if not amount: return
             
-            self.position_manager.place_limit_order(symbol, action_side, price, amount, signal_id=signal_id)
+            # Use 'buy'/'sell' for Orders (vs 'long'/'short' for Positions)
+            order_side = action.lower() 
+            self.position_manager.place_limit_order(symbol, order_side, price, amount, signal_id=signal_id)
             
         except Exception as e:
             logger.error(f"Execute Trade Error: {e}")
@@ -273,10 +275,11 @@ class TradingBot:
         logger.info(f"[FLIP] Flipping {pos['side']} -> {action}")
         success = self.position_manager.close_position_immediate(pos['position_id'], price, reason='flip', signal_id=signal_id)
         if success:
-             action_side = 'long' if action.lower() == 'buy' else 'short'
+             # Use 'buy'/'sell' for Orders
+             order_side = action.lower()
              amount = self.position_manager.calculate_position_size(symbol, price)
              if amount:
-                 self.position_manager.place_limit_order(symbol, action_side, price, amount, signal_id=signal_id)
+                 self.position_manager.place_limit_order(symbol, order_side, price, amount, signal_id=signal_id)
 
     def backfill_history(self):
         limit = 500

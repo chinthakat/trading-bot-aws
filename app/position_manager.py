@@ -371,11 +371,15 @@ class PositionManager:
             # 2. Close Requests
             ptable = self.db.test_positions_table if self.mode=="TEST" else self.db.positions_table
             resp = ptable.scan(FilterExpression='#st = :req', ExpressionAttributeNames={'#st':'status'}, ExpressionAttributeValues={':req':'request_close'})
-            for p in resp.get('Items', []):
+            items = resp.get('Items', [])
+            if items:
+                logger.info(f"Sync found {len(items)} close requests")
+            for p in items:
                 sym = p.get('symbol')
                 price = current_prices.get(sym) if current_prices else None
                 if price:
-                    self.close_position_immediate(p['position_id'], price, reason="sync")
+                    # Pass 'p' as position_data to ensure we have details even if local state is desync
+                    self.close_position_immediate(p['position_id'], price, reason="sync", position_data=p)
                     # Update status to closing
                     self.db.update_position_status(p['position_id'], 'closing', self.mode)
 
