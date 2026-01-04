@@ -18,7 +18,7 @@ from binance.websocket.spot.websocket_stream import SpotWebsocketStreamClient
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from persistence import DynamoManager
-from strategies import StrategyRegistry
+from strategy_loader import StrategyLoader
 from position_manager import PositionManager
 
 # Load environment variables
@@ -52,8 +52,7 @@ class TradingBot:
         self.setup_strategies()
         self.setup_position_manager()
         
-        # State
-        self.last_processed_kline_ts = {} # symbol -> timestamp
+        self.last_processed_kline_ts = {} 
         self.candles = {symbol: deque(maxlen=500) for symbol in self.symbols}
         logger.info("Initialized candles with maxlen: 500")
         
@@ -96,12 +95,20 @@ class TradingBot:
     def setup_strategies(self):
         self.strategies = {}
         active_strategies = self.config['trading']['active_strategies']
+        
+        # New Plugin Loading Logic
+        try:
+            StrategyLoader.discover_strategies()
+        except Exception as e:
+            logger.error(f"Plugin Discovery Failed: {e}")
+
         for name, details in active_strategies.items():
             if details['enabled']:
                 try:
-                    strategy = StrategyRegistry.get_strategy(name, details['params'])
+                    # Use Loader
+                    strategy = StrategyLoader.get_strategy(name, details['params'])
                     self.strategies[name] = strategy
-                    logger.info(f"Loaded strategy: {name}")
+                    logger.info(f"Loaded strategy plugin: {name}")
                 except Exception as e:
                     logger.error(f"Failed to load strategy {name}: {e}")
     
@@ -110,17 +117,13 @@ class TradingBot:
         self.position_manager = PositionManager(self.exchange, self.db, self.config['trading'], self.mode)
         logger.info(f"Position Manager initialized in {self.mode} mode")
 
-    # --- WebSocket Handling ---
-
     def start_websocket(self):
         logger.info(f"Starting WebSocket Client ({self.interval})...")
-        
         def handle_message(_, message):
             try:
                 payload = json.loads(message)
                 if 'data' in payload: data = payload['data']
                 else: data = payload
-
                 if 'e' in data and data['e'] == 'kline':
                     self.process_kline(data)
             except Exception as e:
@@ -133,7 +136,6 @@ class TradingBot:
             on_close=self.on_close,
             is_combined=True
         )
-        
         streams = [f"{symbol.replace('/', '').lower()}@kline_{self.interval}" for symbol in self.symbols]
         self.ws_client.subscribe(stream=streams)
         logger.info(f"Subscribed to: {streams}")
@@ -154,61 +156,44 @@ class TradingBot:
             try:
                 k = data['k']
                 symbol = data['s']
-                
                 # Map Symbol
                 target_symbol = None
                 for s in self.symbols:
-                    if s.replace('/', '') == symbol:
-                        target_symbol = s
-                        break
+                    if s.replace('/', '') == symbol: target_symbol = s; break
                 if not target_symbol: return
 
                 is_closed = k['x']
-                close_price = float(k['c'])
-                candle_ts = k['t']
-
-                # 1. Update Latest Price
-                self.latest_prices[target_symbol] = close_price
-                
-                # 2. Construct Candle Object
                 candle = {
                     'timestamp': k['t'], 
-                    'open': float(k['o']),
-                    'high': float(k['h']),
-                    'low': float(k['l']),
-                    'close': float(k['c']),
-                    'volume': float(k['v']),
+                    'open': float(k['o']), 'high': float(k['h']), 'low': float(k['l']), 'close': float(k['c']), 'volume': float(k['v']),
                     'symbol': target_symbol
                 }
+                
+                self.latest_prices[target_symbol] = candle['close']
 
-                # 3. Handle Closed Candle (Persistence + Strategy)
                 if is_closed:
                     last_ts = self.last_processed_kline_ts.get(target_symbol, 0)
-                    if candle_ts > last_ts:
-                        self.last_processed_kline_ts[target_symbol] = candle_ts
-                        
-                        # Authoritative Append
+                    if candle['timestamp'] > last_ts:
+                        self.last_processed_kline_ts[target_symbol] = candle['timestamp']
                         self.candles[target_symbol].append(candle)
-                        
-                        # Run Strategy
                         self.run_strategy(target_symbol)
-                
-                # 4. Real-time Indicators (for Logging/Dashboard)
-                # Create a temporary history: Existing Closed + Current (if not closed)
-                # If closed, it's already in self.candles (step 3), so use self.candles
+
+                # Real-time Indicators
                 if is_closed:
                     temp_history = list(self.candles[target_symbol])
                 else:
                     temp_history = list(self.candles[target_symbol])
                     temp_history.append(candle)
                 
-                cand_data_to_log = candle
+                cand_data_to_log = candle.copy()
                 if len(temp_history) >= 20: 
                     try:
                         df_temp = pd.DataFrame(temp_history)
                         for name, strategy in self.strategies.items():
-                            strategy.calculate(df_temp)
-                        cand_data_to_log = df_temp.iloc[-1].to_dict()
+                            # DECOUPLED: Generic Result Handling
+                            res = strategy.calculate(df_temp)
+                            if res.indicators:
+                                cand_data_to_log.update(res.indicators)
                     except Exception: pass
 
                 self.db.log_candle(cand_data_to_log)
@@ -222,37 +207,49 @@ class TradingBot:
         df = pd.DataFrame(self.candles[symbol])
         
         for name, strategy in self.strategies.items():
-            signal = strategy.calculate(df)
+            # DECOUPLED: Receive StrategyResult
+            result = strategy.calculate(df)
+            signal = result.signal
             
+            # Log Generic Indicators
+            if result.indicators:
+                 # Human readable log
+                 ind_str = " | ".join([f"{k}={v:.2f}" if isinstance(v, float) else f"{k}={v}" for k,v in result.indicators.items()])
+                 if signal:
+                     logger.info(f"{'🟢' if signal=='BUY' else '🔴'} SIGNAL {signal} ({name}) | {ind_str}")
+                 else:
+                     logger.info(f"UPDATE ({symbol}): {ind_str}")
+
             if signal:
-                # Signal Generated
                 seq_id = self.db.get_next_sequence('signal_id')
                 formatted_id = f"A{seq_id:04d}"
                 
-                logger.info(f"SIGNAL {signal} for {symbol} (Strategy: {name})")
-                
-                self.db.log_audit('SIGNAL_GENERATED', cause=f"Strategy:{name}", details={'symbol':symbol, 'signal':signal}, mode=self.mode, price=df.iloc[-1]['close'], side='BUY' if signal=='BUY' else 'SELL', signal_id=formatted_id)
-                
+                # Decoupled Audit Log: Pass generic indicators as details
+                details = {'symbol':symbol, 'signal':signal}
+                if result.indicators: details.update(result.indicators)
+                if result.metadata: details.update(result.metadata)
+
+                self.db.log_audit('SIGNAL_GENERATED', cause=f"Strategy:{name}", details=details, mode=self.mode, price=df.iloc[-1]['close'], side='BUY' if signal=='BUY' else 'SELL', signal_id=formatted_id)
                 self.db.log_signal({'symbol': symbol, 'signal': signal, 'algo': name, 'price': df.iloc[-1]['close'], 'timestamp': int(time.time()*1000)})
                 
                 self.execute_trade(symbol, signal, name, df.iloc[-1]['close'], signal_id=formatted_id)
 
         # Log Full Candle (Overwrite real-time)
+        # Note: Strategy.calculate already enriched DF columns for backfill/logging?
+        # Yes, MaCrossoverStrategy modifies DF. So df.iloc[-1] has columns.
         self.db.log_candle(df.iloc[-1].to_dict())
-        logger.info(f"CANDLE CLOSED ({symbol}): {df.iloc[-1]['close']}")
+
 
     def execute_trade(self, symbol, action, algo, price, signal_id=None):
         try:
             pos = self.position_manager.current_position
             action_side = 'long' if action.lower() == 'buy' else 'short'
             
-            # Rule: Interaction with Existing Position
             if pos:
                 if pos['side'] == action_side:
                     logger.info(f"Ignoring {action}: Already {pos['side']}")
                     return
                 else:
-                    # Flip Logic
                     enable_flip = self.config['trading'].get('enable_position_flip', False)
                     if enable_flip:
                         logger.info(f"[FLIP] Opposite signal detected: {action} vs {pos['side']}. Flipping position...")
@@ -262,7 +259,6 @@ class TradingBot:
                         self.position_manager.close_position(price)
                         return
 
-            # Open New Position
             if not self.position_manager.can_open_position(symbol): return
             
             amount = self.position_manager.calculate_position_size(symbol, price)
@@ -274,7 +270,6 @@ class TradingBot:
             logger.error(f"Execute Trade Error: {e}")
 
     def flip_position_logic(self, symbol, pos, action, price, signal_id):
-        # Helper for Bot-side Flip
         logger.info(f"[FLIP] Flipping {pos['side']} -> {action}")
         success = self.position_manager.close_position_immediate(pos['position_id'], price, reason='flip', signal_id=signal_id)
         if success:
@@ -291,16 +286,13 @@ class TradingBot:
                 ohlcv = self.exchange.fetch_ohlcv(symbol, self.interval, limit=limit)
                 new_candles = []
                 for c in ohlcv:
-                    new_candles.append({
-                        'timestamp': c[0], 'open': float(c[1]), 'high': float(c[2]), 'low': float(c[3]), 'close': float(c[4]), 'volume': float(c[5]), 'symbol': symbol
-                    })
+                    new_candles.append({'timestamp': c[0], 'open': float(c[1]), 'high': float(c[2]), 'low': float(c[3]), 'close': float(c[4]), 'volume': float(c[5]), 'symbol': symbol})
                 self.candles[symbol].extend(new_candles)
                 
-                # Persist
                 if new_candles:
                     df = pd.DataFrame(self.candles[symbol])
+                    # Strategy calculates and Modifies DF (Enrichment)
                     for name, strat in self.strategies.items(): strat.calculate(df)
-                    # Log chunks
                     for idx, row in df.iterrows(): self.db.log_candle(row.to_dict())
                     self.latest_prices[symbol] = new_candles[-1]['close']
             except Exception as e:
@@ -309,68 +301,35 @@ class TradingBot:
     def run(self):
         self.backfill_history()
         self.start_websocket()
-        logger.info("Bot is listening...")
+        logger.info("Bot is listening (Plugin Architecture)...")
         
         counter = 0
         while True:
             time.sleep(10)
             counter += 1
-            
             try:
-                # 1. Sync State
-                try:
-                    self.position_manager.sync_state(self.latest_prices)
-                except Exception as e:
-                    logger.error(f"Sync State Error: {e}")
+                self.position_manager.sync_state(self.latest_prices)
 
-                # 2. Force Close Check
-                try:
-                     pos = self.position_manager.current_position
-                     if pos and pos.get('force_close'):
-                         symbol = pos['symbol']
-                         price = self.latest_prices.get(symbol)
-                         if price:
-                             self.position_manager.close_position(price) # Or immediate
-                             pos['force_close'] = False
-                except Exception as e:
-                    logger.error(f"Force Close Error: {e}")
+                pos = self.position_manager.current_position
+                if pos and pos.get('force_close') and self.latest_prices.get(pos['symbol']):
+                     self.position_manager.close_position(self.latest_prices[pos['symbol']])
+                     pos['force_close'] = False
 
-                # 3. Order Check
-                try:
-                    for oid in list(self.position_manager.pending_orders.keys()):
-                        odata = self.position_manager.pending_orders.get(oid)
-                        if odata:
-                            price = self.latest_prices.get(odata['symbol'])
-                            self.position_manager.check_order_status(oid, price)
-                except Exception as e:
-                    logger.error(f"Order Check Error: {e}")
+                for oid in list(self.position_manager.pending_orders.keys()):
+                    odata = self.position_manager.pending_orders.get(oid)
+                    if odata: self.position_manager.check_order_status(oid, self.latest_prices.get(odata['symbol']))
 
-                # 4. Expired Orders
-                try:
-                    self.position_manager.cancel_expired_orders()
-                except Exception as e:
-                    logger.error(f"Expire Check Error: {e}")
+                self.position_manager.cancel_expired_orders()
                 
-                # 5. PnL Update
-                try:
-                    for s in self.symbols:
-                        if s in self.latest_prices:
-                            self.position_manager.update_position_pnl(s, self.latest_prices[s])
-                except Exception as e:
-                    logger.error(f"PnL Update Error: {e}")
+                for s in self.symbols:
+                    if s in self.latest_prices: self.position_manager.update_position_pnl(s, self.latest_prices[s])
 
-            except Exception as outer_e:
-                logger.error(f"Main Loop Critical Error: {outer_e}")
+            except Exception as e:
+                logger.error(f"Loop Error: {e}")
 
             if counter % 6 == 0:
-                self.log_status()
-
-    def log_status(self):
-        uptime = int(time.time() - self.start_time)
-        msg = f"STATUS: Running for {uptime}s | {self.latest_prices}"
-        logger.info(msg)
-        with open("api_logs.txt", "a") as f:
-            f.write(f"{datetime.now()} [HEARTBEAT] {msg}\n")
+                uptime = int(time.time() - self.start_time)
+                with open("api_logs.txt", "a") as f: f.write(f"{datetime.now()} [HEARTBEAT] Running {uptime}s | {self.latest_prices}\n")
 
 if __name__ == "__main__":
     bot = TradingBot('config.json')

@@ -64,6 +64,10 @@ def render_positions_table(db, mode):
             if 'exit_time' in df.columns: 
                 df['exit_time'] = pd.to_datetime(df['exit_time'].astype(int), unit='ms')
             
+            # Ensure critical columns exist
+            for c in ['exit_price', 'exit_time', 'pnl', 'stop_loss', 'take_profit']:
+                 if c not in df.columns: df[c] = None
+            
             # Convert decimal/float cols
             numeric_cols = ['entry_price', 'exit_price', 'quantity', 'pnl', 'current_price', 'stop_loss', 'take_profit']
             for col in numeric_cols:

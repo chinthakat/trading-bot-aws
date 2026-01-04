@@ -66,6 +66,19 @@ class PositionManager:
         if self.current_position:
             logger.info(f"Restored active position from DB: {self.current_position['symbol']} ({self.current_position['status']})")
             
+    def _sanitize_from_db(self, item):
+        """Helper to convert Decimals and hydrate timestamps from DB items."""
+        new_item = item.copy()
+        for k, v in new_item.items():
+            if isinstance(v, Decimal):
+                new_item[k] = float(v)
+            # Hydrate Timestamps (stored as ms int)
+            if k in ['created_at', 'expires_at', 'filled_at', 'entry_time', 'exit_time'] and isinstance(new_item[k], (int, float, Decimal)):
+                try:
+                    new_item[k] = datetime.fromtimestamp(float(new_item[k]) / 1000.0)
+                except: pass
+        return new_item
+
     def _restore_test_state(self):
         """Restore positions and orders into simulator from DB."""
         try:
@@ -85,15 +98,8 @@ class PositionManager:
             )
             existing_orders = resp_ord.get('Items', [])
 
-            # Helper to convert Decimal to float
-            def dec_to_float(item):
-                 new_item = item.copy()
-                 for k,v in new_item.items():
-                     if isinstance(v, Decimal): new_item[k] = float(v)
-                 return new_item
-
-            clean_positions = [dec_to_float(p) for p in existing_positions]
-            clean_orders = [dec_to_float(o) for o in existing_orders]
+            clean_positions = [self._sanitize_from_db(p) for p in existing_positions]
+            clean_orders = [self._sanitize_from_db(o) for o in existing_orders]
             
             self.simulator.load_state(clean_positions, clean_orders)
             
@@ -149,7 +155,8 @@ class PositionManager:
                 self.pending_orders[order['order_id']] = order
                 
                 # Audit Log
-                self.db.log_audit('ORDER_PLACED', cause=order_type, details=order, mode=self.mode)
+                safe_details = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in order.items()}
+                self.db.log_audit('ORDER_PLACED', cause=order_type, details=safe_details, mode=self.mode)
                 return order
                 
             else: # LIVE
@@ -177,7 +184,10 @@ class PositionManager:
                 
                 self.pending_orders[order['id']] = order_data
                 self.db.log_order(order_data)
-                self.db.log_audit('ORDER_PLACED', cause=order_type, details=order_data, mode=self.mode)
+                
+                # Audit Log Sanitize
+                safe_details = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in order_data.items()}
+                self.db.log_audit('ORDER_PLACED', cause=order_type, details=safe_details, mode=self.mode)
                 
                 return order_data
                 
@@ -352,10 +362,8 @@ class PositionManager:
             resp = table.scan(FilterExpression='#st = :pending', ExpressionAttributeNames={'#st':'status'}, ExpressionAttributeValues={':pending':'pending'})
             for o in resp.get('Items', []):
                  if o['order_id'] not in self.pending_orders:
-                     # Import logic (simplified for brevity, assume dashboard puts correct format)
-                     # Convert Decimal -> Float
-                     clean_o = {k: float(v) if isinstance(v, Decimal) else v for k,v in o.items()}
-                     # Handle timestamps if needed
+                     # Import logic using sanitize
+                     clean_o = self._sanitize_from_db(o)
                      self.pending_orders[clean_o['order_id']] = clean_o
                      if self.mode == "TEST":
                           self.simulator.pending_orders[clean_o['order_id']] = clean_o # Inject into simulator

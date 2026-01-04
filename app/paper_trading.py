@@ -155,15 +155,26 @@ class PaperTradingSimulator:
                      pos['entry_price'] = avg_price
                 else:
                     # Closing Short (Partial or Full)
-                    # For simplicity, if opposite side exists, we assume FLIP or Close.
-                    # Standard logic: Reduce Short.
-                    pass # TODO: Handle complex netting if needed. MVP assumes strict flip.
-                    # MVP: We assume we are FLAT before opening? 
-                    # Actually PositionManager handles "Close then Open".
-                    # So Simulator just opens a LONG.
-                    # Wait. If I still have a SHORT, and I Buy?
-                    # Simulator needs Netting?
-                    logger.warning("[SIMULATOR] Netting logic not fully implemented for concurrent opposite positions")
+                    remaining = pos['quantity'] - amount
+                    if remaining <= 1e-9: # Epsilon for float comparison
+                        # Full Close
+                        pnl = (pos['entry_price'] - fill_price) * pos['quantity'] # Short PnL
+                        pos['status'] = 'closed'
+                        pos['exit_price'] = fill_price
+                        pos['exit_time'] = datetime.now()
+                        pos['pnl'] = pnl
+                        
+                        self.closed_positions.append(pos)
+                        del self.positions[symbol]
+                        
+                        if self.db:
+                             self.db.update_position_status(pos['position_id'], 'closed', mode='TEST')
+                             self.db.update_position_pnl(pos['position_id'], pnl, fill_price, mode='TEST')
+                    else:
+                        # Partial Close
+                        pos['quantity'] = remaining
+                        if self.db:
+                            self.db.log_position(pos, mode='TEST') # Update qty
             else:
                 # New Long
                 new_pos = {
