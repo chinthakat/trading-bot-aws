@@ -30,7 +30,21 @@ def render_account_summary(db, mode, config):
         initial = 0.0 
         current_balance = initial + pnl_stats['closed_pnl']
 
-    equity = current_balance + pnl_stats['open_pnl']
+    # Calculate Equity (Spot: Cash + Position Value)
+    # Position Value = Cost Basis + Open PnL
+    # We need to fetch Open Cost Basis
+    open_cost_basis = 0.0
+    try:
+        table = db.test_positions_table if mode == "TEST" else db.positions_table
+        resp = table.scan(FilterExpression='#st = :open', ExpressionAttributeNames={'#st': 'status'}, ExpressionAttributeValues={':open': 'open'})
+        for pos in resp.get('Items', []):
+            entry = float(pos['entry_price'])
+            qty = float(pos['quantity'])
+            open_cost_basis += (entry * qty)
+    except:
+        pass
+        
+    equity = current_balance + open_cost_basis + pnl_stats['open_pnl']
     
     col1, col2, col3, col4, col5 = st.columns(5)
     

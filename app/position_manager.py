@@ -33,6 +33,7 @@ class PositionManager:
         self.commission_rate = risk_mgmt.get('commission_rate', 0.001)
         self.sl_pct = risk_mgmt.get("sl_pct", 0.02)
         self.tp_pct = risk_mgmt.get("tp_pct", 0.04)
+        self.max_slippage_pct = risk_mgmt.get("max_slippage_pct", 0.5) / 100.0 # Config is 0.5, need 0.005
         
         # risk_per_trade might be at root or in risk_mgmt
         self.risk_per_trade = config.get("risk_per_trade", risk_mgmt.get("risk_per_trade", 3.0))
@@ -179,9 +180,8 @@ class PositionManager:
         Delegates to Simulator (TEST) or Exchange (LIVE).
         """
         try:
-            # Limit Price Calculation (0.1% offset usually for Maker, but we want fills)
-            # Actually for entry we usually want LIMIT.
-            offset_pct = 0.001 
+            # Limit Price Calculation (Use slippage for Marketable Limit)
+            offset_pct = self.max_slippage_pct
             limit_price = current_price * (1 + offset_pct) if side == 'buy' else current_price * (1 - offset_pct)
             
             # Calculate SL/TP if not provided

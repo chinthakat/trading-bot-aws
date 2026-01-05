@@ -335,5 +335,15 @@ class TradingBot:
                 with open("api_logs.txt", "a") as f: f.write(f"{datetime.now()} [HEARTBEAT] Running {uptime}s | {self.latest_prices}\n")
 
 if __name__ == "__main__":
-    bot = TradingBot('config.json')
+    # Resolve config path relative to this script
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_path = os.path.join(base_dir, 'config.json')
+    
+    if not os.path.exists(config_path):
+        print(f"Config not found at: {config_path}")
+        # Fallback to current dir if running from root
+        if os.path.exists('config.json'):
+            config_path = 'config.json'
+            
+    bot = TradingBot(config_path)
     bot.run()

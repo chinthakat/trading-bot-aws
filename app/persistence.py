@@ -496,6 +496,12 @@ class DynamoManager:
                 pos['entry_price'] = float(pos['entry_price'])
                 pos['quantity'] = float(pos['quantity'])
                 pos['pnl'] = float(pos.get('pnl', 0))
+                
+                # Full Decimal Conversion
+                if 'entry_commission' in pos: pos['entry_commission'] = float(pos['entry_commission'])
+                if 'stop_loss' in pos and pos['stop_loss'] is not None: pos['stop_loss'] = float(pos['stop_loss'])
+                if 'take_profit' in pos and pos['take_profit'] is not None: pos['take_profit'] = float(pos['take_profit'])
+                
                 # Convert timestamp if needed? 
                 # PositionManager expects datetime objects for internal usage usually?
                 # Actually _create_position_from_order sets datetime. 
