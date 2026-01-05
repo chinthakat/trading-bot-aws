@@ -10,6 +10,7 @@ import sys
 # Add app directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from services.db_service import SharedDbService
+from persistence import DynamoManager # For Close Actions
 from admin_view import render_admin # Moved to app root
 
 # Page Config
@@ -28,6 +29,13 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 def load_config():
     with open(CONFIG_PATH, 'r') as f: return json.load(f)
 config = load_config()
+try:
+    dynamo_db = DynamoManager(config) # Initialized for Write Actions
+except Exception as e:
+    st.error(f"DynamoDB Init Failed: {e}")
+    dynamo_db = None
+
+mode = config['trading'].get('mode', 'TEST')
 
 # --- Sidebar ---
 st.sidebar.header("Control Panel")
@@ -93,7 +101,58 @@ def render_overview_content(mode):
     positions = db.get_active_positions()
     if positions:
         df = pd.DataFrame(positions)
-        st.dataframe(df, width='stretch')
+        
+        # Add Close Column
+        df['Close'] = False
+        
+        # Convert Timestamps
+        if 'entry_time' in df.columns:
+             df['entry_time'] = pd.to_datetime(df['entry_time'], unit='ms')
+
+        # Config
+        column_config = {
+            "Close": st.column_config.CheckboxColumn("Close?", default=False),
+            "symbol": st.column_config.TextColumn("Symbol"),
+            "strategy_name": st.column_config.TextColumn("Strategy"),
+            "side": st.column_config.TextColumn("Side"),
+            "quantity": st.column_config.NumberColumn("Size"),
+            "entry_time": st.column_config.DatetimeColumn("Entry Time", format="D MMM, HH:mm:ss"),
+            "pnl": st.column_config.NumberColumn("PnL", format="$%.2f"),
+            "entry_price": st.column_config.NumberColumn("Entry", format="$%.2f"),
+            "current_price": st.column_config.NumberColumn("Price", format="$%.2f"),
+        }
+        
+        # Display Columns
+        # Check if columns exist
+        available_cols = list(df.columns)
+        desired_cols = ['Close', 'strategy_name', 'symbol', 'side', 'quantity', 'entry_price', 'current_price', 'pnl', 'entry_time']
+        cols = [c for c in desired_cols if c in available_cols or c == 'Close']
+        
+        edited_df = st.data_editor(
+            df[cols],
+            hide_index=True,
+            column_config=column_config,
+            disabled=['strategy_name', 'symbol', 'side', 'quantity', 'entry_price', 'current_price', 'pnl', 'entry_time'],
+            key="overview_positions_editor"
+        )
+        
+        # Handle Edits
+        if not edited_df.equals(df[cols]):
+            # Find rows with Close=True
+            for i, row in edited_df.iterrows():     
+                if row['Close']:
+                    # Get Original details (assuming index alignment or lookup)
+                    if i < len(positions):
+                        pos_id = positions[i]['position_id']
+                        status = positions[i].get('status')
+                        if status not in ['closing', 'closed', 'request_close']:
+                            if dynamo_db:
+                                st.toast(f"Requesting Close: {row['symbol']}...", icon="🛑")
+                                dynamo_db.update_position_status(pos_id, 'request_close', mode)
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error("DynamoDB not available. Cannot close.")
     else:
         st.info("No active positions.")
 
