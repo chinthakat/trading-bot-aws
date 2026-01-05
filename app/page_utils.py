@@ -35,7 +35,7 @@ def render_account_summary(db, mode, config):
         current_balance = pnl_stats['closed_pnl']
 
     # Calculate Equity (Futures/Margin: Balance + Open PnL Gross)
-    equity = current_balance + pnl_stats.get('open_pnl_gross', pnl_stats['open_pnl'])
+    equity = current_balance + pnl_stats.get('open_pnl_gross', 0.0)
     
     col1, col2, col3, col4, col5 = st.columns(5)
     

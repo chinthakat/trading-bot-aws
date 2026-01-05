@@ -53,7 +53,12 @@ def get_bot_status():
         if len(parts) > 0:
             ts_str = parts[0].strip()
             try:
-                ts_str = ts_str.split(',')[0]
+                # Remove microseconds/milliseconds if present (handles . or ,)
+                if ',' in ts_str:
+                    ts_str = ts_str.split(',')[0]
+                elif '.' in ts_str:
+                    ts_str = ts_str.split('.')[0]
+                    
                 last_active = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
                 diff = (datetime.now() - last_active).total_seconds()
                 
@@ -166,7 +171,15 @@ for i, strategy_name in enumerate(enabled_strategies):
         try:
             # We need to instantiate or get class to read PLOT_CONFIG
             # Quick hack: Load strategy class safely without config
-            StrategyLoader._strategies = {} # Reset 
+            # Quick hack: Load strategy class safely without config
+            StrategyLoader._strategies = {} # Reset
+            # Ensure we reload modules if they changed on disk
+            import strategies
+            import importlib
+            importlib.reload(strategies)
+            # We might need to reload submodules too if they are imported in strategies/__init__.py
+            # But discover_strategies iterates pkgutil. 
+            
             StrategyLoader.discover_strategies()
             strat_class = StrategyLoader._strategies.get(strategy_name)
             

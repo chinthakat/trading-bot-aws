@@ -5,8 +5,8 @@ from strategies.base import BaseStrategy, StrategyResult
 class BollingerMeanReversion(BaseStrategy):
     NAME = "Bollinger_Mean_Reversion"
     PLOT_CONFIG = {
-        'indicators': ['bb_high', 'bb_low', 'bb_mid'],
-        'colors': ['rgba(255, 0, 0, 0.5)', 'rgba(0, 255, 0, 0.5)', '#FFFFFF']
+        'indicators': ['bb_high', 'bb_mid', 'bb_low'],
+        'colors': ['rgba(255, 0, 0, 0.5)', 'rgba(128, 128, 128, 0.5)', 'rgba(0, 255, 0, 0.5)']
     }
     
     def __init__(self, config):
@@ -35,7 +35,9 @@ class BollingerMeanReversion(BaseStrategy):
         df['bb_mid'] = indicator_bb.bollinger_mavg()
 
         # 2. Calculate RSI
-        df['rsi'] = ta.trend.rsi(df['close'], window=self.rsi_period)
+        # 2. Calculate RSI
+        # RSI is in momentum module, not trend
+        df['rsi'] = ta.momentum.rsi(df['close'], window=self.rsi_period)
 
         # Get latest values
         last_row = df.iloc[-1]

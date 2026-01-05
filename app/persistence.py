@@ -302,7 +302,81 @@ class DynamoManager:
         except ClientError as e:
             print(f"Error logging position: {e}")
 
-    # ... (update_position_pnl, close_position unchanged) ...
+    def update_position_pnl(self, position_id, pnl, current_price, mode="LIVE"):
+        """
+        Update the P&L of an active position.
+        """
+        try:
+            table = self.test_positions_table if mode == "TEST" else self.positions_table
+            table.update_item(
+                Key={'position_id': position_id},
+                UpdateExpression="set pnl = :p",
+                ExpressionAttributeValues={
+                    ':p': Decimal(str(pnl))
+                }
+            )
+            # We don't necessarily need to store current_price in position table, but pnl is critical.
+        except ClientError as e:
+            print(f"Error updating position pnl: {e}")
+        
+    def update_position_status(self, position_id, status, mode="LIVE"):
+        """Update status of a position."""
+        try:
+            table = self.test_positions_table if mode == "TEST" else self.positions_table
+            table.update_item(
+                Key={'position_id': position_id},
+                UpdateExpression="set #st = :s",
+                ExpressionAttributeNames={'#st': 'status'},
+                ExpressionAttributeValues={':s': status}
+            )
+            print(f"Updated position {position_id} status to {status}")
+        except ClientError as e:
+            print(f"Error updating position status: {e}")
+
+    def update_position_risk(self, position_id, stop_loss, take_profit, mode="LIVE"):
+        """Update SL/TP for a position."""
+        try:
+            table = self.test_positions_table if mode == "TEST" else self.positions_table
+            
+            # Robust Decimal
+            sl_val = Decimal(str(stop_loss)) if stop_loss is not None else None
+            tp_val = Decimal(str(take_profit)) if take_profit is not None else None
+            
+            update_expr = "set stop_loss = :sl, take_profit = :tp"
+            vals = {':sl': sl_val, ':tp': tp_val}
+            
+            table.update_item(
+                Key={'position_id': position_id},
+                UpdateExpression=update_expr,
+                ExpressionAttributeValues=vals
+            )
+        except ClientError as e:
+            print(f"Error updating position risk: {e}")
+
+    def close_position(self, position_data, mode="LIVE"):
+        """
+        Close a position by updating exit fields.
+        """
+        try:
+            table = self.test_positions_table if mode == "TEST" else self.positions_table
+            
+            table.update_item(
+                Key={'position_id': position_data['position_id']},
+                UpdateExpression="set #st = :st, exit_price = :ep, exit_time = :et, quantity = :q, pnl = :pnl, exit_commission = :ec",
+                ExpressionAttributeNames={'#st': 'status'},
+                ExpressionAttributeValues={
+                    ':st': 'closed',
+                    ':ep': Decimal(str(position_data['exit_price'])),
+                    ':et': int(position_data['exit_time'].timestamp() * 1000),
+                    ':q': Decimal(str(position_data['quantity'])),  # Remaining quantity (if partial) or 0? Usually we overwrite or irrelevant for closed.
+                    # Wait, quantity shouldn't change unless partial.
+                    ':pnl': Decimal(str(position_data['pnl'])),
+                    ':ec': Decimal(str(position_data.get('exit_commission', 0)))
+                }
+            )
+            print(f"[{mode}] Closed position {position_data['position_id']} PnL: {position_data['pnl']}")
+        except ClientError as e:
+            print(f"Error closing position: {e}")
 
     def log_order(self, order_data, mode="LIVE"):
         """Log a new order to DynamoDB."""
@@ -387,7 +461,16 @@ class DynamoManager:
             }
         except ClientError as e:
             print(f"Error getting account P&L: {e}")
-            return {'total_pnl_net': 0, 'strategies': {}}
+            return {
+                'total_pnl_net': 0.0, 
+                'open_pnl_gross': 0.0,
+                'closed_pnl': 0.0,
+                'win_count': 0,
+                'loss_count': 0,
+                'win_rate': 0.0,
+                'total_fees': 0.0,
+                'strategies': {}
+            }
 
     def get_active_position(self, mode="LIVE"):
         """

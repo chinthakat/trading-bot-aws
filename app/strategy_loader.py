@@ -23,8 +23,10 @@ class StrategyLoader:
 
         for _, name, _ in pkgutil.iter_modules(path, prefix):
             try:
+                logger.info(f"Attempting to load strategy module: {name}")
                 module = importlib.import_module(name)
                 # Scan module for classes inheriting BaseStrategy
+                found_in_module = False
                 for attr_name, attr_value in inspect.getmembers(module):
                     if (inspect.isclass(attr_value) 
                         and issubclass(attr_value, BaseStrategy) 
@@ -33,7 +35,11 @@ class StrategyLoader:
                         # Use class attribute 'name' or fallback to class name
                         strat_name = getattr(attr_value, "NAME", attr_value.__name__)
                         cls._strategies[strat_name] = attr_value
-                        logger.info(f"Discovered strategy plugin: {strat_name}")
+                        logger.info(f"Loaded strategy plugin: {strat_name} from {name}")
+                        found_in_module = True
+                
+                if not found_in_module:
+                    logger.warning(f"No valid strategy class found in module {name}")
                         
             except Exception as e:
                 logger.error(f"Failed to load strategy module {name}: {e}")

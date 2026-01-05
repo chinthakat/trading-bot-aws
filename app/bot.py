@@ -111,6 +111,8 @@ class TradingBot:
                     logger.info(f"Loaded strategy plugin: {name}")
                 except Exception as e:
                     logger.error(f"Failed to load strategy {name}: {e}")
+        
+        logger.info(f"Initialized Bot with strategies: {list(self.strategies.keys())}")
     
     def setup_position_manager(self):
         risk_config = self.config['trading'].get('risk_management', {})
@@ -202,34 +204,23 @@ class TradingBot:
 
         df = pd.DataFrame(self.candles[symbol])
         
+        combined_indicators = {}
+        
         for name, strategy in self.strategies.items():
             # DECOUPLED: Receive StrategyResult
             result = strategy.calculate(df)
             signal = result.signal
             
-            # Log Generic Indicators
+            # Aggregate Indicators
             if result.indicators:
-                 # Human readable log
-                 ind_str = " | ".join([f"{k}={v:.2f}" if isinstance(v, float) else f"{k}={v}" for k,v in result.indicators.items()])
-                 if signal:
-                     logger.info(f"{'🟢' if signal=='BUY' else '🔴'} SIGNAL {signal} ({name}) | {ind_str}")
-                 else:
-                     logger.info(f"UPDATE ({symbol}): {ind_str}")
-                
-                 # Update latest closed candle with indicators in DB
-                 full_candle = self.candles[symbol][-1].copy()
-                 full_candle.update(result.indicators)
-                 # self.db.log_candle(full_candle) # Logged via batch/realtime already? No need to double log here if we trust flow?
-                 # Actually backfill logs it batch. Realtime logs in process_kline.
-                 # Wait, run_strategy is called from process_kline.
-                 # Optimization: Only log updates if needed.
-                 self.db.log_candle(full_candle)
+                 combined_indicators.update(result.indicators)
 
+            # Execution Logic (Per Strategy)
             if signal:
                 seq_id = self.db.get_next_sequence('signal_id')
                 formatted_id = f"A{seq_id:04d}"
                 
-                # Decoupled Audit Log: Pass generic indicators as details
+                # Audit Log
                 details = {'symbol':symbol, 'signal':signal}
                 if result.indicators: details.update(result.indicators)
                 if result.metadata: details.update(result.metadata)
@@ -238,6 +229,51 @@ class TradingBot:
                 self.db.log_signal({'symbol': symbol, 'signal': signal, 'algo': name, 'price': df.iloc[-1]['close'], 'timestamp': int(time.time()*1000)})
                 
                 self.execute_trade(symbol, signal, name, df.iloc[-1]['close'], signal_id=formatted_id)
+
+        # Log Combined Indicators ONCE
+        if combined_indicators:
+             # Human readable log (summary)
+             ind_str = " | ".join([f"{k}={v:.2f}" if isinstance(v, float) else f"{k}={v}" for k,v in combined_indicators.items()])
+             logger.info(f"UPDATE ({symbol}): {ind_str}")
+        
+             # Update latest closed candle with ALL indicators in DB
+             full_candle = self.candles[symbol][-1].copy()
+             full_candle.update(combined_indicators)
+             self.db.log_candle(full_candle)
+
+    def execute_trade(self, symbol, action, algo, price, signal_id=None):
+        try:
+            pos = self.position_manager.current_position
+            action_side = 'long' if action.lower() == 'buy' else 'short'
+            
+            if pos:
+                if pos['side'] == action_side:
+                    logger.info(f"Ignoring {action}: Already {pos['side']}")
+                    return
+                else:
+                    enable_flip = self.config['trading'].get('enable_position_flip', False)
+                    if enable_flip:
+                        logger.info(f"[FLIP] Opposite signal detected: {action} vs {pos['side']}. Flipping position...")
+                        # Flip Logic (omitted for brevity, or assume manual flip or close-first)
+                        # For MVP, just Close First (Aggressive)
+                        self.position_manager.close_position_immediate(pos['position_id'], price, reason="flip")
+                        # Then Open (next tick or immediate? Immediate is better)
+                        # fall through to open
+                    else:
+                        self.position_manager.close_position_immediate(pos['position_id'], price, reason="signal_close")
+                        return
+
+            if not self.position_manager.can_open_position(symbol): return
+            
+            amount = self.position_manager.calculate_position_size(symbol, price)
+            if not amount: return
+            
+            # Use 'buy'/'sell' for Orders (vs 'long'/'short' for Positions)
+            order_side = action.lower() 
+            self.position_manager.place_limit_order(symbol, order_side, price, amount, signal_id=signal_id, strategy_name=algo)
+            
+        except Exception as e:
+            logger.error(f"Execute Trade Error: {e}")
 
     def backfill_history(self):
         limit = 500
