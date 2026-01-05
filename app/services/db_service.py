@@ -102,9 +102,25 @@ class SharedDbService:
                 balance REAL,
                 equity REAL,
                 pnl REAL,
+                total_fees REAL DEFAULT 0,
                 updated_at INTEGER
             )
         """)
+        
+        # Account History
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS account_history (
+                timestamp INTEGER PRIMARY KEY,
+                equity REAL,
+                balance REAL
+            )
+        """)
+        
+        # Migration: Add total_fees if missing logic (Simplistic: Catch error if col missing later)
+        try:
+             cursor.execute("ALTER TABLE account ADD COLUMN total_fees REAL DEFAULT 0")
+        except: pass
+
         
         self.conn.commit()
 
@@ -200,13 +216,23 @@ class SharedDbService:
 
     # --- Account Methods ---
     
-    def update_account(self, balance, equity, pnl):
+    def update_account(self, balance, equity, pnl, total_fees=0.0):
         ts = int(datetime.now().timestamp() * 1000)
         self.conn.execute("""
-            INSERT OR REPLACE INTO account (account_id, balance, equity, pnl, updated_at)
-            VALUES ('main', ?, ?, ?, ?)
-        """, (balance, equity, pnl, ts))
+            INSERT OR REPLACE INTO account (account_id, balance, equity, pnl, total_fees, updated_at)
+            VALUES ('main', ?, ?, ?, ?, ?)
+        """, (balance, equity, pnl, total_fees, ts))
         self.conn.commit()
+
+    def log_account_history(self, balance, equity):
+        ts = int(datetime.now().timestamp() * 1000)
+        self.conn.execute("INSERT OR REPLACE INTO account_history (timestamp, balance, equity) VALUES (?, ?, ?)", (ts, balance, equity))
+        self.conn.commit()
+    
+    def get_account_history(self, limit: int = 1440) -> List[Dict]:
+        # Default 1440 mins = 24h
+        cursor = self.conn.execute("SELECT * FROM account_history ORDER BY timestamp ASC")
+        return [dict(row) for row in cursor.fetchall()]
         
     def get_account(self):
         cursor = self.conn.execute("SELECT * FROM account WHERE account_id = 'main'")

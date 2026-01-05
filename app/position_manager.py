@@ -47,13 +47,14 @@ class PositionManager:
             initial_balance = config.get('test_initial_balance', 10000.0)
             
             # Load balance from DB
-            saved_account = db.get_test_account_balance()
+            # Load balance from DB
+            saved_account = db.get_test_account_summary()
             if saved_account:
                 starting_balance = saved_account['balance']
                 logger.info(f"Loaded saved test account balance: ${starting_balance:,.2f}")
             else:
                 starting_balance = initial_balance
-                db.update_test_account_balance(starting_balance)
+                db.update_test_account_summary(starting_balance, total_fees=0.0)
             
             # Instantiate Simulator with DB INJECTION
             self.simulator = PaperTradingSimulator(starting_balance, db=self.db, commission_rate=self.commission_rate)

@@ -22,11 +22,13 @@ class PaperTradingSimulator:
         
         # Try Loading Balance from DB
         self.balance = float(initial_balance)
+        self.total_fees = 0.0
         if self.db:
-            saved_bal = self.db.get_test_account_balance()
-            if saved_bal and 'balance' in saved_bal:
-                self.balance = float(saved_bal['balance'])
-                logger.info(f"Restored Paper Balance: ${self.balance:,.2f}")
+            saved_acct = self.db.get_test_account_summary()
+            if saved_acct:
+                self.balance = float(saved_acct.get('balance', initial_balance))
+                self.total_fees = float(saved_acct.get('total_fees', 0.0))
+                logger.info(f"Restored Paper Balance: ${self.balance:,.2f}, Fees: ${self.total_fees:.2f}")
         
         self.positions = {}  # symbol -> position dict
         self.pending_orders = {}  # order_id -> order dict
@@ -270,8 +272,11 @@ class PaperTradingSimulator:
 
         logger.info(f"[PAPER] Fill executed: {side} {amount} {symbol} @ {fill_price}")
         
+        # Accumulate Total Fees
+        self.total_fees += commission
+        
         if self.db:
-             self.db.update_test_account_balance(self.balance)
+             self.db.update_test_account_summary(self.balance, self.total_fees)
 
 
     def get_position(self, symbol: str) -> Optional[Dict]:

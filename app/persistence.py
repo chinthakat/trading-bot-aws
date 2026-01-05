@@ -523,8 +523,8 @@ class DynamoManager:
             print(f"Unexpected error in get_active_position: {e}")
             return None
 
-    def get_test_account_balance(self):
-        """Get the current test account balance (latest entry)."""
+    def get_test_account_summary(self):
+        """Get the current test account summary (balance, fees, etc)."""
         try:
             # Table has composite key (account_id, timestamp)
             # We query for 'test_account' and get the latest by timestamp
@@ -537,15 +537,16 @@ class DynamoManager:
             if items:
                 return {
                     'balance': float(items[0]['balance']),
+                    'total_fees': float(items[0].get('total_fees', 0)),
                     'updated_at': items[0].get('updated_at')
                 }
             return None
         except Exception as e:
-            print(f"Error getting test account balance: {e}")
+            print(f"Error getting test account summary: {e}")
             return None
             
-    def update_test_account_balance(self, balance: float):
-        """Update test account balance."""
+    def update_test_account_summary(self, balance: float, total_fees: float = 0.0):
+        """Update test account summary."""
         try:
             timestamp = int(datetime.now().timestamp() * 1000)
             self.test_account_table.put_item(
@@ -553,10 +554,11 @@ class DynamoManager:
                     'account_id': 'test_account',
                     'timestamp': timestamp,
                     'balance': Decimal(str(balance)),
+                    'total_fees': Decimal(str(total_fees)),
                     'updated_at': timestamp
                 }
             )
             return True
         except Exception as e:
-            print(f"Error updating test account balance: {e}")
+            print(f"Error updating test account summary: {e}")
             return False

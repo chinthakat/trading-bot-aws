@@ -47,10 +47,43 @@ def render_overview_content(mode):
      # Account Summary
     account = db.get_account()
     if account:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Balance", f"${account.get('balance',0):.2f}")
-        c2.metric("Equity", f"${account.get('equity',0):.2f}")
-        c3.metric("PnL", f"${account.get('pnl',0):.2f}")
+        # Metrics Calculation
+        initial_balance = config['trading'].get('test_initial_balance', 10000.0) if mode in ['PAPER', 'TEST'] else 0.0
+        equity = account.get('equity', 0)
+        balance = account.get('balance', 0)
+        
+        total_pnl = equity - initial_balance if initial_balance > 0 else 0.0
+        # For Live, Total PnL might be harder without initial ref. Use generic PnL if available.
+        
+        # History for Change %
+        history = db.get_account_history(limit=1440) # Last 24h
+        
+        def get_pct_change(minutes):
+            if not history: return 0.0
+            cutoff = pd.Timestamp.now() - pd.Timedelta(minutes=minutes)
+            # Find closest history point
+            # timestamp is ms int
+            cutoff_ts = cutoff.timestamp() * 1000
+            
+            # Simple search
+            past_val = equity
+            for h in history:
+                if h['timestamp'] >= cutoff_ts:
+                     past_val = h['equity']
+                     break # Found earliest point in window
+            
+            if past_val == 0: return 0.0
+            return ((equity - past_val) / past_val) * 100.0
+
+        change_24h = get_pct_change(1440)
+        change_1h = get_pct_change(60)
+
+        # Row 1
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Available Cash", f"${balance:,.2f}")
+        c2.metric("Total Equity", f"${equity:,.2f}", delta=f"{change_24h:.2f}% (24h)")
+        c3.metric("Total PnL", f"${total_pnl:,.2f}", delta=f"{change_1h:.2f}% (1h)")
+        c4.metric("Total Fees", f"${account.get('total_fees', 0):.2f}")
     else:
         st.warning("No Account Data yet.")
 

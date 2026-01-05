@@ -110,12 +110,12 @@ class SharedMemoryBot(TradingBot):
                     
                 # 3. Sync Account to Shared DB
                 try:
-                    # Fetch Balance
-                    balance = 0.0
+                    total_fees = 0.0
                     if self.mode in ['PAPER', 'TEST']:
                         # Call Simulator via PositionManager
                         if self.position_manager.simulator:
                             balance = float(self.position_manager.simulator.get_balance())
+                            total_fees = float(getattr(self.position_manager.simulator, 'total_fees', 0.0))
                     else:
                         # LIVE (Simplified for USDT)
                         # We might need to cache this to avoid Rate Limits if polling 1s
@@ -130,7 +130,6 @@ class SharedMemoryBot(TradingBot):
                             balance = getattr(self, 'last_balance', 0.0)
                         self.last_balance = balance
 
-                    # Calculate Equity
                     # Calculate Equity
                     # Equity = Balance + Unrealized PnL (This is wrong for Spot Longs where Balance matched Cost)
                     # Correct Logic:
@@ -171,7 +170,11 @@ class SharedMemoryBot(TradingBot):
                             equity -= (qty * current_price)
                     
                     # Update DB
-                    self.shared_db.update_account(balance, equity, unrealized_pnl)
+                    self.shared_db.update_account(balance, equity, unrealized_pnl, total_fees)
+                    
+                    # 5. Log History (Every minute approx)
+                    if counter % 60 == 0:
+                        self.shared_db.log_account_history(balance, equity)
                     
                 except Exception as err:
                     logger.error(f"Account Sync Error: {err}")
