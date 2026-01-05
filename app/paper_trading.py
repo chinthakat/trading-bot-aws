@@ -30,14 +30,16 @@ class PaperTradingSimulator:
     def load_state(self, positions: List[Dict], orders: List[Dict]):
         """Load state from DB (called by PositionManager)."""
         for pos in positions:
-            self.positions[pos['symbol']] = pos
+            strat = pos.get('strategy_name', 'manual')
+            key = f"{pos['symbol']}_{strat}"
+            self.positions[key] = pos
             
         for order in orders:
             self.pending_orders[order['order_id']] = order
             
         logger.info(f"Simulator loaded state: {len(self.positions)} positions, {len(self.pending_orders)} orders")
 
-    def place_limit_order(self, symbol: str, side: str, price: float, amount: float, expires_at: datetime = None) -> Dict:
+    def place_limit_order(self, symbol: str, side: str, price: float, amount: float, expires_at: datetime = None, strategy_name: str = 'manual') -> Dict:
         """
         Place a virtual limit order.
         """
@@ -58,7 +60,8 @@ class PaperTradingSimulator:
             'created_at': timestamp,
             'expires_at': expires_at,
             'filled_at': None,
-            'fill_price': None
+            'fill_price': None,
+            'strategy_name': strategy_name
         }
         
         self.pending_orders[order_id] = order
@@ -143,16 +146,20 @@ class PaperTradingSimulator:
         # 2. Update Balance (Futures/Margin Model: Collateral)
         cost = fill_price * amount
         commission = cost * self.commission_rate
+        strategy_name = order.get('strategy_name', 'manual')
         
         order['commission'] = commission
         
         # Deduct commission immediately (simplification)
         self.balance -= commission
 
+        # Strategy-Specific Key
+        pos_key = f"{symbol}_{strategy_name}"
+        
         if side == 'buy':
             # Create/Update Position (Long)
-            if symbol in self.positions:
-                pos = self.positions[symbol]
+            if pos_key in self.positions:
+                pos = self.positions[pos_key]
                 if pos['side'] == 'long':
                      # Avg Down
                      total_qty = pos['quantity'] + amount
@@ -183,19 +190,15 @@ class PaperTradingSimulator:
                         
                         # Realize PnL to Balance
                         self.balance += gross_pnl # Add Gross PnL (Comms already deducted)
-                        # Wait, we deducted entry comm on entry, and exit comm just now.
-                        # So Balance += Gross PnL. 
-                        # Balance was: Start - EntryComm - ExitComm.
-                        # Final = Start - EntryComm - ExitComm + GrossPnL = NetPnL + Start. Correct.
                         
                         self.closed_positions.append(pos)
-                        del self.positions[symbol]
+                        del self.positions[pos_key]
                         
                         if self.db:
                              self.db.update_position_status(pos['position_id'], 'closed', mode='TEST')
                              self.db.update_position_pnl(pos['position_id'], net_pnl, fill_price, mode='TEST')
                     else:
-                        # Partial Close (Not implementing PnL Realization for Partial yet for simplicity)
+                        # Partial Close
                         pos['quantity'] = remaining
                         if self.db:
                             self.db.log_position(pos, mode='TEST')
@@ -205,6 +208,7 @@ class PaperTradingSimulator:
                     'position_id': str(uuid.uuid4()),
                     'symbol': symbol,
                     'side': 'long',
+                    'strategy_name': strategy_name,
                     'entry_price': float(fill_price),
                     'quantity': float(amount),
                     'entry_time': datetime.now(),
@@ -214,15 +218,15 @@ class PaperTradingSimulator:
                     'stop_loss': order.get('stop_loss'),
                     'take_profit': order.get('take_profit')
                 }
-                self.positions[symbol] = new_pos
+                self.positions[pos_key] = new_pos
                 if self.db:
                     self.db.log_position(new_pos, mode='TEST')
 
         elif side == 'sell':
              # Check for Long to Close
-             if symbol in self.positions and self.positions[symbol]['side'] == 'long':
+             if pos_key in self.positions and self.positions[pos_key]['side'] == 'long':
                   # Close Long
-                  pos = self.positions[symbol]
+                  pos = self.positions[pos_key]
                   # PnL = Exit - Entry (Long)
                   gross_pnl = (fill_price - pos['entry_price']) * amount
                   entry_comm = pos.get('entry_commission', 0.0)
@@ -238,7 +242,7 @@ class PaperTradingSimulator:
                   self.balance += gross_pnl
                   
                   self.closed_positions.append(pos)
-                  del self.positions[symbol]
+                  del self.positions[pos_key]
                   
                   if self.db:
                       self.db.update_position_status(pos['position_id'], 'closed', mode='TEST')
@@ -250,6 +254,7 @@ class PaperTradingSimulator:
                     'position_id': str(uuid.uuid4()),
                     'symbol': symbol,
                     'side': 'short',
+                    'strategy_name': strategy_name,
                     'entry_price': float(fill_price),
                     'quantity': float(amount),
                     'entry_time': datetime.now(),
@@ -259,7 +264,7 @@ class PaperTradingSimulator:
                     'stop_loss': order.get('stop_loss'),
                     'take_profit': order.get('take_profit')
                   }
-                  self.positions[symbol] = new_pos
+                  self.positions[pos_key] = new_pos
                   if self.db:
                       self.db.log_position(new_pos, mode='TEST')
 
@@ -269,9 +274,10 @@ class PaperTradingSimulator:
              self.db.update_test_account_balance(self.balance)
 
 
-    def get_position(self, symbol: str) -> Optional[Dict]:
-        """Retrieve open position for symbol."""
-        return self.positions.get(symbol)
+    def get_position(self, symbol: str, strategy_name: str = 'manual') -> Optional[Dict]:
+        """Retrieve open position for symbol/strategy."""
+        key = f"{symbol}_{strategy_name}"
+        return self.positions.get(key)
         
     def _persist_order(self, order: Dict):
         """Helper to write order to DB."""

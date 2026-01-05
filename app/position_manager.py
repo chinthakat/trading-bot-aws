@@ -40,7 +40,8 @@ class PositionManager:
         
         # State
         self.pending_orders = {} # Local view of pending orders
-        self.current_position = None
+        self.active_positions = {} # strategy_name -> position dict
+        self.current_position = None # Deprecated, kept for safety but unused logic
         
         # Mode-specific initialization
         if mode == "TEST":
@@ -70,10 +71,13 @@ class PositionManager:
             self.orders_table_name = 'orders'
             logger.info(f"PositionManager in LIVE mode - REAL TRADES ENABLED")
         
-        # Load active position (common for both modes)
-        self.current_position = self.db.get_active_position(self.mode)
-        if self.current_position:
-            logger.info(f"Restored active position from DB: {self.current_position['symbol']} ({self.current_position['status']})")
+        # Load active positions (common for both modes)
+        all_positions = self.db.get_all_active_positions(self.mode)
+        for pos in all_positions:
+            strat = pos.get('strategy_name', 'manual')
+            self.active_positions[strat] = pos
+            
+        logger.info(f"Restored {len(self.active_positions)} active positions from DB.")
             
     def _sanitize_from_db(self, item):
         """Helper to convert Decimals and hydrate timestamps from DB items."""
@@ -115,20 +119,21 @@ class PositionManager:
         except Exception as e:
             logger.error(f"Failed to restore simulator state: {e}")
 
-    def can_open_position(self, symbol: str) -> bool:
-        # 1. Check Local Active Position
-        if self.current_position is not None:
+    def can_open_position(self, symbol: str, strategy_name: str) -> bool:
+        # 1. Check Local Active Position for THIS Strategy
+        strat_pos = self.active_positions.get(strategy_name)
+        if strat_pos:
              # FIX: Desync Risk - If closing, allow new signal to proceed (flip logic handles wait)
-             status = self.current_position.get('status')
+             status = strat_pos.get('status')
              if status in ['request_close', 'closing']:
-                 logger.info(f"Position {symbol} is {status}. Allowing new signal check (Flip).")
+                 logger.info(f"Position {symbol} ({strategy_name}) is {status}. Allowing new signal check (Flip).")
              else:
-                 logger.warning(f"Cannot open position for {symbol}: already have open position (Local)")
+                 logger.warning(f"Cannot open position for {symbol} ({strategy_name}): already has open position")
                  return False
         
         # 2. Check Simulator/DB State (Source of Truth)
         if self.mode == "TEST":
-            sim_pos = self.simulator.get_position(symbol)
+            sim_pos = self.simulator.get_position(symbol, strategy_name)
             if sim_pos:
                 status = sim_pos.get('status')
                 if status in ['request_close', 'closing']:
@@ -136,14 +141,20 @@ class PositionManager:
                 else:
                     logger.warning(f"Cannot open position for {symbol}: Simulator has open position (Desync prevented)")
                     # Self-heal
-                    self.current_position = sim_pos
+                    self.active_positions[strategy_name] = sim_pos
                     return False
                 
-        # 3. Check Pending Entry Orders (Specific to symbol)
-        # Note: self.pending_orders is a dict of all orders. Filter by symbol.
-        pending_entries = [o for oid, o in self.pending_orders.items() if o.get('symbol') == symbol and o.get('type') == 'entry']
+        # 3. Check Pending Entry Orders (Specific to symbol AND strategy)
+        # Note: self.pending_orders is a dict of all orders.
+        pending_entries = [
+            o for oid, o in self.pending_orders.items() 
+            if o.get('symbol') == symbol 
+            and o.get('type') == 'entry'
+            and o.get('strategy_name') == strategy_name
+        ]
+        
         if len(pending_entries) > 0:
-             logger.warning(f"Cannot open position for {symbol}: has {len(pending_entries)} pending entry orders")
+             logger.warning(f"Cannot open position for {symbol} ({strategy_name}): has {len(pending_entries)} pending entry orders")
              return False
              
         return True
@@ -326,21 +337,23 @@ class PositionManager:
                         
                         # Logic: Did we open or close?
                         order_type = local_order.get('type', 'entry')
+                        strategy_name = local_order.get('strategy_name', 'manual')
                         
                         if order_type == 'entry':
                             # Sync current_position from simulator
                             # Simulator already created position in its memory.
                             # We just grab it.
                             symbol = local_order['symbol']
-                            sim_pos = self.simulator.get_position(symbol)
+                            sim_pos = self.simulator.get_position(symbol, strategy_name)
                             if sim_pos:
-                                self.current_position = sim_pos
-                                logger.info(f"[TEST] Position synced from simulator: {sim_pos['position_id']}")
+                                self.active_positions[strategy_name] = sim_pos
+                                logger.info(f"[TEST] Position synced from simulator: {sim_pos['position_id']} ({strategy_name})")
                         
                         elif order_type == 'exit':
                             # Sync close
-                            self.current_position = None
-                            logger.info(f"[TEST] Position closed in simulator. Cleared local.")
+                            if strategy_name in self.active_positions:
+                                del self.active_positions[strategy_name]
+                            logger.info(f"[TEST] Position closed in simulator for {strategy_name}. Cleared local.")
                             # Simulator handled DB update for closed position.
                             
                     return self.simulator.filled_orders[-1] # Return the filled order data
@@ -374,11 +387,12 @@ class PositionManager:
 
     def _create_position_from_order(self, order_data, exchange_order):
         # Only used in LIVE mode
+        strategy_name = order_data.get('strategy_name', 'manual')
         position = {
             'position_id': str(uuid.uuid4()),
             'symbol': order_data['symbol'],
             'side': 'long' if order_data['side'] == 'buy' else 'short',
-            'strategy_name': order_data.get('strategy_name', 'manual'),
+            'strategy_name': strategy_name,
             'entry_price': float(exchange_order['average']),
             'quantity': float(exchange_order['filled']),
             'entry_time': datetime.now(),
@@ -387,14 +401,14 @@ class PositionManager:
             'stop_loss': order_data.get('stop_loss'),
             'take_profit': order_data.get('take_profit')
         }
-        self.current_position = position
+        self.active_positions[strategy_name] = position
         self.db.log_position(position, self.mode)
-        logger.info(f"[LIVE] Position created: {position['position_id']}")
+        logger.info(f"[LIVE] Position created: {position['position_id']} ({strategy_name})")
 
-    def _colose_position_logic_live(self, exchange_order):
+    def _colose_position_logic_live(self, exchange_order, strategy_name='manual'):
         # Only used in LIVE mode
-        if self.current_position:
-            pos = self.current_position
+        if strategy_name in self.active_positions:
+            pos = self.active_positions[strategy_name]
             exit_price = float(exchange_order['average'])
             pos['status'] = 'closed'
             pos['exit_price'] = exit_price
@@ -405,8 +419,8 @@ class PositionManager:
             pos['pnl'] = pnl
             
             self.db.log_position(pos, self.mode) # Logs full closed pos
-            self.current_position = None
-            logger.info(f"[LIVE] Position closed. PnL: {pnl}")
+            del self.active_positions[strategy_name]
+            logger.info(f"[LIVE] Position closed for {strategy_name}. PnL: {pnl}")
 
     def cancel_expired_orders(self):
         now = datetime.now()
@@ -439,10 +453,14 @@ class PositionManager:
         try:
             # Locate Position
             pos = None
-            if self.current_position and self.current_position.get('position_id') == position_id:
-                pos = self.current_position
-            elif position_data:
+            if position_data:
                 pos = position_data
+            else:
+                # Find in active_positions
+                for strat, p in self.active_positions.items():
+                    if p.get('position_id') == position_id:
+                        pos = p
+                        break
             
             if not pos:
                 logger.error(f"Position {position_id} not found/active")
@@ -451,6 +469,8 @@ class PositionManager:
             symbol = pos['symbol']
             side = pos['side']
             amount = pos['quantity']
+            # Important: Limit order needs strategy_name to close specific paper position
+            strategy_name = pos.get('strategy_name', 'manual')
             
             # EXIT SIDE
             if side in ['buy', 'long']:
@@ -468,7 +488,7 @@ class PositionManager:
                 
             logger.info(f"Closing {position_id} ({side}) via Aggressive {exit_side} @ {price}")
             
-            order = self.place_limit_order(symbol, exit_side, price, amount, order_type='exit', signal_id=signal_id)
+            order = self.place_limit_order(symbol, exit_side, price, amount, order_type='exit', signal_id=signal_id, strategy_name=strategy_name)
             return True if order else False
             
         except Exception as e:
@@ -510,9 +530,11 @@ class PositionManager:
         except Exception as e:
             logger.error(f"Sync State Error: {e}")
 
-    def update_position_pnl(self, symbol: str, current_price: float):
-        if self.current_position and self.current_position['symbol'] == symbol:
-             pos = self.current_position
+    def update_position_pnl(self, symbol: str, current_price: float, strategy_name: str):
+        if strategy_name in self.active_positions:
+             pos = self.active_positions[strategy_name]
+             if pos['symbol'] != symbol: return # Mismatch check
+             
              qty = pos['quantity']
              entry = pos['entry_price']
              
@@ -548,8 +570,8 @@ class PositionManager:
                      if tp and current_price <= float(tp): hit_tp = True
                      
                  if hit_sl:
-                     logger.info(f"Stop Loss triggered for {symbol} @ {current_price} (SL: {sl})")
+                     logger.info(f"Stop Loss triggered for {symbol} ({strategy_name}) @ {current_price}")
                      self.close_position_immediate(pos['position_id'], current_price, reason="stop_loss")
                  elif hit_tp:
-                     logger.info(f"Take Profit triggered for {symbol} @ {current_price} (TP: {tp})")
+                     logger.info(f"Take Profit triggered for {symbol} ({strategy_name}) @ {current_price}")
                      self.close_position_immediate(pos['position_id'], current_price, reason="take_profit")

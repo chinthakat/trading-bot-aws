@@ -472,16 +472,15 @@ class DynamoManager:
                 'strategies': {}
             }
 
-    def get_active_position(self, mode="LIVE"):
+    def get_all_active_positions(self, mode="LIVE"):
         """
-        Get the currently active position (open or request_close).
-        Returns None if no active position is found.
+        Get all active positions (open or request_close) for all strategies.
+        Returns a list of position dicts.
         """
         try:
             table = self.test_positions_table if mode == "TEST" else self.positions_table
             
             # Scan for status=open OR status=request_close
-            # Using partial scan with FilterExpression
             response = table.scan(
                 FilterExpression='#st IN (:open, :req_close)',
                 ExpressionAttributeNames={'#st': 'status'},
@@ -492,40 +491,34 @@ class DynamoManager:
             )
             
             items = response.get('Items', [])
-            if items:
-                # Return the first found active position
-                # (Assuming Rule 2: Single Position Only)
-                pos = items[0]
-                # Convert Decimals to appropriate types
-                pos['entry_price'] = float(pos['entry_price'])
-                pos['quantity'] = float(pos['quantity'])
-                pos['pnl'] = float(pos.get('pnl', 0))
-                
-                # Full Decimal Conversion
-                if 'entry_commission' in pos: pos['entry_commission'] = float(pos['entry_commission'])
-                if 'stop_loss' in pos and pos['stop_loss'] is not None: pos['stop_loss'] = float(pos['stop_loss'])
-                if 'take_profit' in pos and pos['take_profit'] is not None: pos['take_profit'] = float(pos['take_profit'])
-                
-                # Convert timestamp if needed? 
-                # PositionManager expects datetime objects for internal usage usually?
-                # Actually _create_position_from_order sets datetime. 
-                # DB stores milliseconds.
-                # Let's verify what PositionManager expects.
-                # It uses it for calculations/logging. 
-                # Let's convert entry_time to datetime
-                if 'entry_time' in pos:
-                    pos['entry_time'] = datetime.fromtimestamp(int(pos['entry_time']) / 1000)
-                
-                return pos
-            
-            return None
+            return [self._hydrate_position(item) for item in items]
             
         except ClientError as e:
-            print(f"Error fetching active position: {e}")
-            return None
+            print(f"Error fetching active positions: {e}")
+            return []
         except Exception as e:
-            print(f"Unexpected error in get_active_position: {e}")
-            return None
+            print(f"Unexpected error in get_all_active_positions: {e}")
+            return []
+
+    def _hydrate_position(self, pos):
+        """Helper to convert DynamoDB types to Python types."""
+        # Convert Decimals/Strings to float
+        pos['entry_price'] = float(pos['entry_price'])
+        pos['quantity'] = float(pos['quantity'])
+        pos['pnl'] = float(pos.get('pnl', 0))
+        
+        if 'entry_commission' in pos: pos['entry_commission'] = float(pos['entry_commission'])
+        if 'exit_commission' in pos: pos['exit_commission'] = float(pos['exit_commission'])
+        if 'stop_loss' in pos and pos['stop_loss'] is not None: pos['stop_loss'] = float(pos['stop_loss'])
+        if 'take_profit' in pos and pos['take_profit'] is not None: pos['take_profit'] = float(pos['take_profit'])
+        
+        # Hydrate Timestamp
+        if 'entry_time' in pos:
+            # Check if it's already datetime (unlikely from DB) or int (ms)
+            if isinstance(pos['entry_time'], (int, Decimal)):
+                pos['entry_time'] = datetime.fromtimestamp(int(pos['entry_time']) / 1000)
+                
+        return pos
 
     def get_test_account_balance(self):
         """Get the current test account balance (latest entry)."""

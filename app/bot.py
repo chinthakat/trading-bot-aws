@@ -243,7 +243,7 @@ class TradingBot:
 
     def execute_trade(self, symbol, action, algo, price, signal_id=None):
         try:
-            pos = self.position_manager.current_position
+            pos = self.position_manager.active_positions.get(algo)
             action_side = 'long' if action.lower() == 'buy' else 'short'
             
             if pos:
@@ -263,7 +263,7 @@ class TradingBot:
                         self.position_manager.close_position_immediate(pos['position_id'], price, reason="signal_close")
                         return
 
-            if not self.position_manager.can_open_position(symbol): return
+            if not self.position_manager.can_open_position(symbol, algo): return
             
             amount = self.position_manager.calculate_position_size(symbol, price)
             if not amount: return
@@ -321,10 +321,11 @@ class TradingBot:
             try:
                 self.position_manager.sync_state(self.latest_prices)
 
-                pos = self.position_manager.current_position
-                if pos and pos.get('force_close') and self.latest_prices.get(pos['symbol']):
-                     self.position_manager.close_position(self.latest_prices[pos['symbol']])
-                     pos['force_close'] = False
+                # Check force close on all active positions
+                for strat, pos in list(self.position_manager.active_positions.items()):
+                    if pos.get('force_close') and self.latest_prices.get(pos['symbol']):
+                         self.position_manager.close_position_immediate(pos['position_id'], self.latest_prices[pos['symbol']], reason="force_close")
+                         pos['force_close'] = False
 
                 for oid in list(self.position_manager.pending_orders.keys()):
                     odata = self.position_manager.pending_orders.get(oid)
@@ -332,8 +333,10 @@ class TradingBot:
 
                 self.position_manager.cancel_expired_orders()
                 
-                for s in self.symbols:
-                    if s in self.latest_prices: self.position_manager.update_position_pnl(s, self.latest_prices[s])
+                for strategy_name, pos in self.position_manager.active_positions.items():
+                    symbol = pos['symbol']
+                    if symbol in self.latest_prices:
+                         self.position_manager.update_position_pnl(symbol, self.latest_prices[symbol], strategy_name)
 
             except Exception as e:
                 logger.error(f"Loop Error: {e}")
