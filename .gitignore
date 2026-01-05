@@ -1,14 +1,30 @@
-# Secrets
+# Secrets and keys
 .env
+.env.*
+!.env.example
 *.pem
 *.key
+
+# Runtime logs written by the bot and read by the dashboard
+bot.log
+api_logs.txt
+ws_debug.log
+nohup.out
+*.log
 
 # Python
 __pycache__/
 *.py[cod]
+*.so
 .venv/
 venv/
-*.so
+env/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
 
 # IDE
 .vscode/
