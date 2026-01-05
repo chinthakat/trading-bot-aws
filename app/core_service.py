@@ -131,6 +131,7 @@ class SharedMemoryBot(TradingBot):
                         self.last_balance = balance
 
                     # Calculate Equity
+                    # Calculate Equity
                     # Equity = Balance + Unrealized PnL (This is wrong for Spot Longs where Balance matched Cost)
                     # Correct Logic:
                     # If No Position: Equity = Balance
@@ -140,22 +141,34 @@ class SharedMemoryBot(TradingBot):
                     equity = balance
                     unrealized_pnl = 0.0
                     
-                    pos = self.position_manager.current_position
-                    if pos:
+                    # Gather all active positions
+                    active_positions = []
+                    if self.mode in ['PAPER', 'TEST'] and self.position_manager.simulator:
+                        active_positions = list(self.position_manager.simulator.positions.values())
+                    elif self.position_manager.current_position:
+                         active_positions = [self.position_manager.current_position]
+                    
+                    for pos in active_positions:
                         qty = float(pos.get('quantity', 0))
-                        # Current price from pos or latest_prices
-                        current_price = float(pos.get('current_price', 0))
-                        if current_price == 0:
-                            current_price = float(pos.get('entry_price', 0)) 
+                        
+                        # Get Latest Price
+                        symbol = pos['symbol']
+                        current_price = self.latest_prices.get(symbol)
+                        if not current_price:
+                             current_price = float(pos.get('current_price', 0))
+                        if not current_price:
+                             current_price = float(pos.get('entry_price', 0))
                         
                         side = pos['side']
-                        unrealized_pnl = float(pos.get('pnl', 0))
+                        # Estimate PnL contribution
+                        pnl = float(pos.get('pnl', 0))
+                        unrealized_pnl += pnl
                         
                         if side in ['long', 'buy']:
-                            equity = balance + (qty * current_price)
+                            equity += (qty * current_price)
                         else:
                             # Short
-                            equity = balance - (qty * current_price)
+                            equity -= (qty * current_price)
                     
                     # Update DB
                     self.shared_db.update_account(balance, equity, unrealized_pnl)

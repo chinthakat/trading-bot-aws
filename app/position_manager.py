@@ -123,6 +123,12 @@ class PositionManager:
         
         # 2. Check Simulator/DB State (Source of Truth)
         if self.mode == "TEST":
+            # Strict Check: Simulator Count
+            sim_count = len(self.simulator.positions)
+            if sim_count >= self.max_positions:
+                 logger.warning(f"Cannot open position: Max Positions Reached ({sim_count}/{self.max_positions})")
+                 return False
+
             if self.simulator.get_position(symbol):
                 logger.warning(f"Cannot open position for {symbol}: Simulator has open position (Desync prevented)")
                 # Self-heal

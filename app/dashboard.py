@@ -180,15 +180,41 @@ def render_strategy_chart(strategy_name, symbol):
             color = 'green' if s['side'] == 'BUY' else 'red'
             fig.add_annotation(x=ts, y=s['price'], text="📢 EXECUTED", showarrow=True, arrowhead=1, arrowcolor=color, opacity=0.8)
 
-        # Default Zoom
+        # Default Zoom and Dynamic Y-Axis Scaling
+        range_x = None
+        range_y = None
+        
         if len(df) > 60:
+            # 1. Define X-Window (Last 60 candles)
             min_x = df['timestamp'].iloc[-60]
             max_x = df['timestamp'].iloc[-1] + pd.Timedelta(minutes=5)
             range_x = [min_x, max_x]
-        else:
-            range_x = None
+            
+            # 2. Calculate Y-Range based on visible data
+            mask = (df['timestamp'] >= min_x)
+            subset = df.loc[mask]
+            
+            if not subset.empty:
+                # Get Min/Max of Price
+                y_min = subset['low'].min()
+                y_max = subset['high'].max()
+                
+                # Check Indicators if they are outliers (Optional, stick to price for clarity)
+                # Apply Buffer (e.g., 10% of the range)
+                diff = y_max - y_min
+                if diff == 0: diff = y_max * 0.01 # Fallback for flat line
+                
+                padding = diff * 0.2 # 20% padding
+                range_y = [y_min - padding, y_max + padding]
 
-        fig.update_layout(height=600, xaxis_rangeslider_visible=False, title=f"{symbol} ({config['trading'].get('interval', '1m')})", yaxis_title="Price", xaxis=dict(range=range_x) if range_x else None)
+        fig.update_layout(
+            height=600, 
+            xaxis_rangeslider_visible=False, 
+            title=f"{symbol} ({config['trading'].get('interval', '1m')})", 
+            yaxis_title="Price",
+            xaxis=dict(range=range_x) if range_x else None,
+            yaxis=dict(range=range_y, autorange=False) if range_y else None
+        )
 
         st.plotly_chart(fig)
     else:
