@@ -50,7 +50,7 @@ class PaperTradingSimulator:
             
         logger.info(f"Simulator loaded state: {len(self.positions)} positions, {len(self.pending_orders)} orders")
 
-    def place_limit_order(self, symbol: str, side: str, price: float, amount: float, expires_at: datetime = None, algo: str = None) -> Dict:
+    def place_limit_order(self, symbol: str, side: str, price: float, amount: float, expires_at: datetime = None, algo: str = None, order_type: str = 'entry') -> Dict:
         """
         Place a virtual limit order.
         """
@@ -72,7 +72,8 @@ class PaperTradingSimulator:
             'expires_at': expires_at,
             'filled_at': None,
             'fill_price': None,
-            'strategy_name': algo
+            'strategy_name': algo,
+            'type': order_type # Store intent (entry/exit)
         }
         
         self.pending_orders[order_id] = order
@@ -81,7 +82,7 @@ class PaperTradingSimulator:
         if self.db:
             self._persist_order(order)
             
-        logger.info(f"[PAPER] Placed {side} limit order: {symbol} @ ${price:.2f} qty={amount}")
+        logger.info(f"[PAPER] Placed {side} {order_type} limit order: {symbol} @ ${price:.2f} qty={amount}")
         return order
 
     def cancel_order(self, order_id: str) -> bool:
@@ -124,6 +125,9 @@ class PaperTradingSimulator:
                 should_fill = True
                 
         if should_fill:
+            # SAFETY CHECK: If Exit, ensure we have a position to close?
+            # Actually, handle in _execute_fill for atomic state update logic.
+            
             # Execute Fill
             logger.info(f"[SIMULATOR] Filling {side} {order_id}. Limit:{limit_price}, Market:{current_price}")
             self._execute_fill(order, current_price)
@@ -199,13 +203,20 @@ class PaperTradingSimulator:
                         
                         if self.db:
                              self.db.update_position_status(pos['position_id'], 'closed', mode='TEST')
-                             self.db.update_position_pnl(pos['position_id'], pnl, fill_price, mode='TEST')
+                             self.db.update_position_pnl(pos['position_id'], net_pnl, fill_price, mode='TEST')
                     else:
                         # Partial Close
                         pos['quantity'] = remaining
                         if self.db:
                             self.db.log_position(pos, mode='TEST') # Update qty
             else:
+                # SAFETY: If Intent was Exit, but no position exists, REJECT Open.
+                if order.get('type') == 'exit':
+                    logger.warning(f"[PAPER] Ignored EXIT order for {symbol} as no position exists. Prevents accidental New Long.")
+                    # Refund Balance?
+                    self.balance += (cost + commission)
+                    return 
+
                 # New Long
                 new_pos = {
                     'position_id': str(uuid.uuid4()),
@@ -251,6 +262,13 @@ class PaperTradingSimulator:
                       self.db.update_position_pnl(pos['position_id'], net_pnl, fill_price, mode='TEST')
              
              else:
+                  # SAFETY: If Intent was Exit, but no position exists, REJECT Open.
+                  if order.get('type') == 'exit':
+                      logger.warning(f"[PAPER] Ignored EXIT order for {symbol} as no position exists. Prevents accidental New Short.")
+                      # Refund Revenue? (Revenue was added, remove it)
+                      self.balance -= (cost - commission)
+                      return
+
                   # New Short
                   new_pos = {
                     'position_id': str(uuid.uuid4()),
@@ -273,7 +291,9 @@ class PaperTradingSimulator:
         logger.info(f"[PAPER] Fill executed: {side} {amount} {symbol} @ {fill_price}")
         
         # Accumulate Total Fees
-        self.total_fees += commission
+        if order.get('type') != 'exit' or (symbol in self.positions or order.get('status') == 'filled'): 
+             # Only if we actually traded. If blocked, we returned early.
+             self.total_fees += commission
         
         if self.db:
              self.db.update_test_account_summary(self.balance, self.total_fees)

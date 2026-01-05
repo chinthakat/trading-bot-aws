@@ -156,14 +156,40 @@ class PositionManager:
                 return min_amount
             
             # Risk-Based Sizing
-            # 1. Determine Account Balance
+            # 1. Determine Identity (Equity)
             if self.mode == "TEST":
-                acct = self.db.get_test_account_balance()
-                balance = float(acct['balance']) if acct else 10000.0
+                acct = self.db.get_test_account_summary()
+                cash_balance = float(acct['balance']) if acct else 10000.0
+                
+                # Add Unrealized Value of Active Positions (Equity)
+                # This fixes the "Flip Sizing Bug" where cash is 0 but equity is high.
+                equity = cash_balance
+                
+                # Check Local Cache or DB for positions
+                # For simplicity/speed in TEST mode, trust Simulator or DB.
+                # Since PositionManager holds self.current_position for the active symbol.
+                if self.current_position:
+                    # Value = Qty * Current Price
+                    # Note: We use the 'price' passed to this function as current market price approximation
+                    pos_value = self.current_position['quantity'] * price
+                    if self.current_position['side'] == 'long':
+                         equity += pos_value
+                    elif self.current_position['side'] == 'short':
+                         # If Short, Bal includes Short Sale Proceeds usually? 
+                         # Simulator Logic: Bal += Cost - Comm.
+                         # So Bal is HIGH.
+                         # PnL = Entry - Current.
+                         # Equity = Bal + PnL needed?
+                         # Short: Net Liq = Cash - BuyToCoverCost.
+                         equity -= pos_value
+                
+                balance = equity
+                logger.info(f"[SIZING] Cash: {cash_balance:.2f}, Equity: {balance:.2f}")
+
             else:
                 # Live Balance logic (omitted for MVP, assume fixed or fetch)
                 balance = 1000.0 # Placeholder for LIVE
-            
+                
             # 2. Calculate Risk Amount (e.g. 3% of Equity)
             risk_amount = balance * (self.risk_per_trade / 100.0)
             

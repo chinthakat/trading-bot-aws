@@ -9,9 +9,10 @@ $RemoteDir = "~/trading-bot"
 Write-Host "--- Trading Bot Cluster Reboot Sequence ---" -ForegroundColor Cyan
 
 # 1. Sync Logic
-Write-Host "[1/5] Syncing Configuration and Scripts..."
+Write-Host "[1/5] Syncing Configuration and App..."
 scp -i $Key config.json "${User}:${RemoteDir}/config.json"
 scp -i $Key start_bot.sh "${User}:${RemoteDir}/start_bot.sh"
+scp -i $Key -r app "${User}:${RemoteDir}/"
 if ($LASTEXITCODE -ne 0) { Write-Error "SCP Failed"; exit 1 }
 
 # 2. Kill Logic
