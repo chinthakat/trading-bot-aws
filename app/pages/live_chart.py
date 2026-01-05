@@ -383,31 +383,32 @@ if items:
                  st.rerun()
             st.stop()
             
-    # Drop rows with NaN in required columns (clean mixed data)
-    df = df.dropna(subset=required_cols)
+    # Process Types & Cleaning
+    # 1. Force conversion of all numeric columns from Decimal to Float
+    numeric_cols = ['open', 'high', 'low', 'close', 'volume', 'sma_short', 'sma_long']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+    # 2. Drop rows missing OHLC data to prevent plotting gaps/crashes
+    df = df.dropna(subset=['open', 'high', 'low', 'close'])
     
     if df.empty:
-        st.warning("No valid candle data found yet. (Old price data ignored)")
+        st.warning("No valid candle data found after cleaning.")
         if st.checkbox("Auto-Refresh", value=True):
              time.sleep(refresh_rate)
              st.rerun()
         st.stop()
-
-    # Process Types
-    # DynamoDB Decimals -> Float
-    numeric_cols = ['open', 'high', 'low', 'close', 'volume']
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = df[col].astype(float)
             
     df['timestamp'] = pd.to_numeric(df['timestamp'])
     df['timestamp_dt'] = pd.to_datetime(df['timestamp'], unit='ms')
     
     # Identify Indicator Columns (e.g. sma_10, sma_100)
-    ignore = numeric_cols + ['symbol', 'timestamp', 'timestamp_dt', 'expiry']
+    # Re-scan columns after cleaning
+    ignore = ['symbol', 'timestamp', 'timestamp_dt', 'expiry', 'open', 'high', 'low', 'close', 'volume']
     indicators = [c for c in df.columns if c not in ignore]
     for col in indicators:
-         df[col] = df[col].astype(float)
+         df[col] = pd.to_numeric(df[col], errors='coerce')
 
     # Plot
     fig = go.Figure()

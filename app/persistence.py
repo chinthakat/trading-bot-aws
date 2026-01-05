@@ -36,6 +36,25 @@ class DynamoManager:
         self.test_audit_table = self.dynamodb.Table(self.table_names.get('test_audit', 'test_audit_logs'))
         self.counters_table = self.dynamodb.Table(self.table_names.get('counters', 'TradingBot_Counters'))
 
+    def _sanitize_for_dynamo(self, item):
+        """Helper to sanitize a dict for DynamoDB (float -> Decimal, robust NaN checks)."""
+        new_item = {}
+        for k, v in item.items():
+            # Robust NaN/Inf check for floats/strings
+            s_val = str(v).lower()
+            if s_val in ['nan', 'inf', '-inf']:
+                continue
+            
+            # Convert float to Decimal
+            if isinstance(v, float):
+                try:
+                    new_item[k] = Decimal(str(v))
+                except:
+                    new_item[k] = v
+            else:
+                new_item[k] = v
+        return new_item
+
     def get_next_sequence(self, name):
         """
         Get next sequence number from atomic counter.
@@ -456,8 +475,10 @@ class DynamoManager:
             
             
             return {
-                'total_pnl': total_pnl,
-                'open_pnl': open_pnl,
+                'total_pnl': total_pnl, # Legacy
+                'total_pnl_net': total_pnl, # Consistent naming
+                'open_pnl': open_pnl,       # Legacy (Now Gross due to PositionManager update)
+                'open_pnl_gross': open_pnl, # Explicit naming
                 'closed_pnl': closed_pnl,
                 'win_count': win_count,
                 'loss_count': loss_count,

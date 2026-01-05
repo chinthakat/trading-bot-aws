@@ -34,21 +34,20 @@ def render_account_summary(db, mode, config):
         # Maybe use closed_pnl relative to 0? 
         current_balance = pnl_stats['closed_pnl']
 
-    # Calculate Equity (Futures/Margin: Balance + Open PnL)
-    # Balance is Collateral (Wallet)
-    equity = current_balance + pnl_stats['open_pnl']
+    # Calculate Equity (Futures/Margin: Balance + Open PnL Gross)
+    equity = current_balance + pnl_stats.get('open_pnl_gross', pnl_stats['open_pnl'])
     
     col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        st.metric("Total Equity", f"${equity:,.4f}", delta=f"{pnl_stats['total_pnl']:,.4f}")
+        st.metric("Total Equity", f"${equity:,.4f}", delta=f"{pnl_stats['total_pnl_net']:,.4f}")
     with col2:
-        st.metric("Cash Balance", f"${current_balance:,.2f}")
+        st.metric("Realized Cash", f"${current_balance:,.2f}")
     with col3:
-        st.metric("Open P&L", f"${pnl_stats['open_pnl']:,.4f}", 
-             delta_color="normal" if pnl_stats['open_pnl'] >= 0 else "inverse")
+        st.metric("Open P&L (Gross)", f"${pnl_stats.get('open_pnl_gross', 0.0):,.4f}", 
+             delta_color="normal" if pnl_stats.get('open_pnl_gross', 0) >= 0 else "inverse")
     with col4:
-        st.metric("Total Fees", f"${pnl_stats.get('total_fees', 0.0):,.4f}")
+        st.metric("Total Commissions", f"${pnl_stats.get('total_fees', 0.0):,.4f}")
     with col5:
         win_rate = pnl_stats['win_rate'] * 100
         st.metric("Win Rate", f"{win_rate:.1f}%", help=f"{pnl_stats['win_count']}W - {pnl_stats['loss_count']}L")

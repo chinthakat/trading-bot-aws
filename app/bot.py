@@ -144,12 +144,14 @@ class TradingBot:
         logger.error(f"WebSocket Error: {error}")
 
     def on_close(self, _, *args):
-        logger.warning("WebSocket Closed. Attempting Reconnect...")
+        logger.warning("WebSocket Closed. Reconnecting and backfilling...")
         time.sleep(5)
         try:
+            # Re-run backfill to bridge the gap during downtime
+            self.backfill_history() 
             self.start_websocket()
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Reconnection failed: {e}")
 
     def process_kline(self, data):
         with self.lock:
@@ -169,6 +171,9 @@ class TradingBot:
                     'symbol': target_symbol
                 }
                 
+                # OPTIMIZATION: Log raw candle immediately to free up socket/persistence
+                self.db.log_candle(candle)
+                
                 self.latest_prices[target_symbol] = candle['close']
 
                 if is_closed:
@@ -176,33 +181,24 @@ class TradingBot:
                     if candle['timestamp'] > last_ts:
                         self.last_processed_kline_ts[target_symbol] = candle['timestamp']
                         self.candles[target_symbol].append(candle)
+                        
+                        # Run Strategy ONLY on closed candles
                         self.run_strategy(target_symbol)
 
-                # Real-time Indicators
-                if is_closed:
-                    temp_history = list(self.candles[target_symbol])
-                else:
-                    temp_history = list(self.candles[target_symbol])
-                    temp_history.append(candle)
+                # Real-time Indicators (Visualization only - lower priority)
+                # We skip real-time indicator updates for DB to save cycles?
+                # User asked to: "Ensure indicator calculations only run on the "closed" candle event"
+                # So we remove the real-time indicator block for open candles to reduce lag.
                 
-                cand_data_to_log = candle.copy()
-                if len(temp_history) >= 20: 
-                    try:
-                        df_temp = pd.DataFrame(temp_history)
-                        for name, strategy in self.strategies.items():
-                            # DECOUPLED: Generic Result Handling
-                            res = strategy.calculate(df_temp)
-                            if res.indicators:
-                                cand_data_to_log.update(res.indicators)
-                    except Exception: pass
-
-                self.db.log_candle(cand_data_to_log)
-
             except Exception as e:
                 logger.error(f"Process Kline Error: {e}")
 
     def run_strategy(self, symbol):
-        if len(self.candles[symbol]) < 50: return
+        # Dynamically find the longest required window from all active strategies
+        required_warmup = max([s.long_window for s in self.strategies.values()]) + 1
+        
+        if len(self.candles[symbol]) < required_warmup:
+            return
 
         df = pd.DataFrame(self.candles[symbol])
         
@@ -219,6 +215,15 @@ class TradingBot:
                      logger.info(f"{'🟢' if signal=='BUY' else '🔴'} SIGNAL {signal} ({name}) | {ind_str}")
                  else:
                      logger.info(f"UPDATE ({symbol}): {ind_str}")
+                
+                 # Update latest closed candle with indicators in DB
+                 full_candle = self.candles[symbol][-1].copy()
+                 full_candle.update(result.indicators)
+                 # self.db.log_candle(full_candle) # Logged via batch/realtime already? No need to double log here if we trust flow?
+                 # Actually backfill logs it batch. Realtime logs in process_kline.
+                 # Wait, run_strategy is called from process_kline.
+                 # Optimization: Only log updates if needed.
+                 self.db.log_candle(full_candle)
 
             if signal:
                 seq_id = self.db.get_next_sequence('signal_id')
@@ -234,71 +239,6 @@ class TradingBot:
                 
                 self.execute_trade(symbol, signal, name, df.iloc[-1]['close'], signal_id=formatted_id)
 
-        # Log Full Candle (Overwrite real-time)
-        # Note: Strategy.calculate already enriched DF columns for backfill/logging?
-        # Yes, MaCrossoverStrategy modifies DF. So df.iloc[-1] has columns.
-        self.db.log_candle(df.iloc[-1].to_dict())
-
-
-    def execute_trade(self, symbol, action, algo, price, signal_id=None):
-        try:
-            pos = self.position_manager.current_position
-            action_side = 'long' if action.lower() == 'buy' else 'short'
-            
-            if pos:
-                if pos['side'] == action_side:
-                    logger.info(f"Ignoring {action}: Already {pos['side']}")
-                    return
-                else:
-                    enable_flip = self.config['trading'].get('enable_position_flip', False)
-                    if enable_flip:
-                        logger.info(f"[FLIP] Opposite signal detected: {action} vs {pos['side']}. Flipping position...")
-                        self.flip_position_logic(symbol, pos, action, price, signal_id)
-                        return
-                    else:
-                        self.position_manager.close_position(price)
-                        return
-
-            if not self.position_manager.can_open_position(symbol): return
-            
-            amount = self.position_manager.calculate_position_size(symbol, price)
-            if not amount: return
-            
-            # Use 'buy'/'sell' for Orders (vs 'long'/'short' for Positions)
-            order_side = action.lower() 
-            self.position_manager.place_limit_order(symbol, order_side, price, amount, signal_id=signal_id)
-            
-        except Exception as e:
-            logger.error(f"Execute Trade Error: {e}")
-
-    def flip_position_logic(self, symbol, pos, action, price, signal_id):
-        logger.info(f"[FLIP] Flipping {pos['side']} -> {action}")
-        success = self.position_manager.close_position_immediate(pos['position_id'], price, reason='flip', signal_id=signal_id)
-        
-        if success:
-             # FIX: Flip Logic Deadlock
-             # Wait for position to actually close (confirmed via sync_state)
-             # Timeout 30s
-             logger.info("[FLIP] Waiting for close confirmation...")
-             start_wait = time.time()
-             closed_confirmed = False
-             
-             while time.time() - start_wait < 30:
-                 self.position_manager.sync_state(self.latest_prices)
-                 if self.position_manager.current_position is None:
-                     closed_confirmed = True
-                     break
-                 time.sleep(0.5)
-                 
-             if closed_confirmed:
-                 logger.info("[FLIP] Close confirmed. Placing new order.")
-                 order_side = action.lower()
-                 amount = self.position_manager.calculate_position_size(symbol, price)
-                 if amount:
-                     self.position_manager.place_limit_order(symbol, order_side, price, amount, signal_id=signal_id)
-             else:
-                 logger.error("[FLIP] Timeout waiting for close. Flip aborted to prevent dual position.")
-
     def backfill_history(self):
         limit = 500
         logger.info(f"Backfilling {limit} candles...")
@@ -307,14 +247,28 @@ class TradingBot:
                 ohlcv = self.exchange.fetch_ohlcv(symbol, self.interval, limit=limit)
                 new_candles = []
                 for c in ohlcv:
-                    new_candles.append({'timestamp': c[0], 'open': float(c[1]), 'high': float(c[2]), 'low': float(c[3]), 'close': float(c[4]), 'volume': float(c[5]), 'symbol': symbol})
+                    new_candles.append({
+                        'symbol': symbol, 'timestamp': c[0], 'open': float(c[1]), 
+                        'high': float(c[2]), 'low': float(c[3]), 'close': float(c[4]), 
+                        'volume': float(c[5])
+                    })
                 self.candles[symbol].extend(new_candles)
                 
                 if new_candles:
                     df = pd.DataFrame(self.candles[symbol])
                     # Strategy calculates and Modifies DF (Enrichment)
                     for name, strat in self.strategies.items(): strat.calculate(df)
-                    for idx, row in df.iterrows(): self.db.log_candle(row.to_dict())
+                    
+                    # Efficiently write to DB in batches
+                    with self.db.prices_table.batch_writer() as batch:
+                        for _, row in df.iterrows():
+                            # Use helper to sanitize before writing
+                            item = self.db._sanitize_for_dynamo(row.to_dict())
+                            # Make sure expiry is set
+                            item['expiry'] = int(time.time()) + 604800
+                            batch.put_item(Item=item)
+                            
+                    logger.info(f"Batch backfill complete for {symbol}")
                     self.latest_prices[symbol] = new_candles[-1]['close']
             except Exception as e:
                 logger.error(f"Backfill error {symbol}: {e}")

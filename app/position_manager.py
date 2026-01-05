@@ -187,10 +187,9 @@ class PositionManager:
                 qty = max_qty_cost * 0.99  # 99% of balance to be safe with fees
                 
             # 5. Enforce Min/Max/Precision (FIX: Precision Error)
-            amount = self.exchange.amount_to_precision(symbol, qty)
-            # Convert back to float for internal logic handling as CCXT returns string often
-            amount = float(amount)
+            amount = self._format_quantity(symbol, qty)
             
+            # Reset min amount check ensuring standard float comparison
             if amount < min_amount:
                 amount = min_amount
             
@@ -201,6 +200,14 @@ class PositionManager:
         except Exception as e:
             logger.error(f"Error calculating position size: {e}")
             return None
+
+    def _format_quantity(self, symbol, amount):
+        market = self.exchange.market(symbol)
+        step_size = market['limits']['amount']['min']
+        return float(self.exchange.amount_to_precision(symbol, amount))
+
+    def _format_price(self, symbol, price):
+        return float(self.exchange.price_to_precision(symbol, price))
 
     def place_limit_order(self, symbol: str, side: str, current_price: float, amount: float, order_type: str = 'entry', signal_id: str = None) -> Optional[Dict]:
         """
@@ -214,7 +221,7 @@ class PositionManager:
             limit_price = current_price * (1 + offset_pct) if side == 'buy' else current_price * (1 - offset_pct)
             
             # FIX: Precision Enforced on Limit Price
-            limit_price = float(self.exchange.price_to_precision(symbol, limit_price))
+            limit_price = self._format_price(symbol, limit_price)
 
             # FIX: Calculate SL/TP based on CURRENT MARKET PRICE (not inflated Limit Price)
             # This minimizes slippage error in risk calc.
@@ -232,8 +239,8 @@ class PositionManager:
                      tp_price = ref_price * (1 - self.tp_pct)
                      
                 # Round SL/TP
-                sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
-                tp_price = float(self.exchange.price_to_precision(symbol, tp_price))
+                if sl_price: sl_price = self._format_price(symbol, sl_price)
+                if tp_price: tp_price = self._format_price(symbol, tp_price)
 
             
             if self.mode == "TEST":
