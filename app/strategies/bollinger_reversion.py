@@ -5,8 +5,9 @@ from strategies.base import BaseStrategy, StrategyResult
 class BollingerMeanReversion(BaseStrategy):
     NAME = "Bollinger_Mean_Reversion"
     PLOT_CONFIG = {
-        'indicators': ['bb_high', 'bb_mid', 'bb_low'],
-        'colors': ['rgba(255, 0, 0, 0.5)', 'rgba(128, 128, 128, 0.5)', 'rgba(0, 255, 0, 0.5)']
+        'overlays': ['bb_high', 'bb_mid', 'bb_low'],
+        'oscillators': ['rsi'],
+        'colors': ['rgba(255, 0, 0, 0.5)', 'rgba(128, 128, 128, 0.5)', 'rgba(0, 255, 0, 0.5)', 'purple']
     }
     
     def __init__(self, config):

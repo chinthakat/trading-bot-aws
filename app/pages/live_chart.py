@@ -168,28 +168,29 @@ for i, strategy_name in enumerate(enabled_strategies):
         st.subheader(f"{strategy_name} Analysis")
         
         # 1. Get Strategy Config for Plotting
+        # 1. Get Strategy Config for Plotting
         try:
             # We need to instantiate or get class to read PLOT_CONFIG
-            # Quick hack: Load strategy class safely without config
             # Quick hack: Load strategy class safely without config
             StrategyLoader._strategies = {} # Reset
             # Ensure we reload modules if they changed on disk
             import strategies
             import importlib
             importlib.reload(strategies)
-            # We might need to reload submodules too if they are imported in strategies/__init__.py
-            # But discover_strategies iterates pkgutil. 
             
             StrategyLoader.discover_strategies()
             strat_class = StrategyLoader._strategies.get(strategy_name)
             
             plot_config = getattr(strat_class, 'PLOT_CONFIG', {})
-            plot_indicators = plot_config.get('indicators', [])
+            # Backward compatibility or new format
+            overlays = plot_config.get('overlays', plot_config.get('indicators', []))
+            oscillators = plot_config.get('oscillators', [])
             plot_colors = plot_config.get('colors', [])
             
         except Exception as e:
             st.caption(f"Could not load plot config: {e}")
-            plot_indicators = []
+            overlays = []
+            oscillators = []
             plot_colors = []
 
         # 2. Filter Data for this Strategy
@@ -203,26 +204,55 @@ for i, strategy_name in enumerate(enabled_strategies):
         strat_orders = [o for o in all_filled_orders if o.get('strategy_name', 'manual') == strategy_name]
 
         # 3. Build Chart
-        fig = go.Figure()
+        from plotly.subplots import make_subplots
+        
+        has_osc = len(oscillators) > 0
+        
+        fig = make_subplots(
+            rows=2 if has_osc else 1, 
+            cols=1, 
+            shared_xaxes=True, 
+            vertical_spacing=0.05, 
+            row_width=[0.3, 0.7] if has_osc else [1.0]
+        )
 
-        # Candles (Always show)
+        # Row 1: Price Candles
         fig.add_trace(go.Candlestick(
             x=df['timestamp_dt'],
             open=df['open'], high=df['high'], low=df['low'], close=df['close'],
             name='OHLC'
-        ))
+        ), row=1, col=1)
 
-        # Indicators (Strategy Specific)
-        for idx, col in enumerate(plot_indicators):
+        # Row 1: Overlays
+        color_idx = 0
+        for col in overlays:
             if col in df.columns:
-                color = plot_colors[idx % len(plot_colors)]
+                color = plot_colors[color_idx % len(plot_colors)]
                 fig.add_trace(go.Scatter(
                     x=df['timestamp_dt'], y=df[col],
                     line=dict(color=color, width=1),
                     name=col.upper()
-                ))
+                ), row=1, col=1)
+                color_idx += 1
         
-        # Markers
+        # Row 2: Oscillators
+        if has_osc:
+            for col in oscillators:
+                if col in df.columns:
+                    color = plot_colors[color_idx % len(plot_colors)]
+                    fig.add_trace(go.Scatter(
+                        x=df['timestamp_dt'], y=df[col],
+                        line=dict(color=color, width=1),
+                        name=col.upper()
+                    ), row=2, col=1)
+                    color_idx += 1
+                    
+                    # Special RSI Guides
+                    if 'rsi' in col.lower():
+                        fig.add_hline(y=65, line_dash="dash", line_color="red", row=2, col=1)
+                        fig.add_hline(y=35, line_dash="dash", line_color="green", row=2, col=1)
+        
+        # Markers (Added to Row 1)
         def add_marker_trace(items, type_label, color, symbol_shape, size=10):
             x, y, hover = [], [], []
             for item in items:
@@ -240,8 +270,6 @@ for i, strategy_name in enumerate(enabled_strategies):
                     price = float(item.get('price', 0))
                     sig_type = item['side'].upper()
                 
-                # Filter by side/color logic happens at caller? 
-                # Actually, specialized lists below
                 x.append(ts)
                 y.append(price)
                 hover.append(f"{type_label} {sig_type}<br>{price}")
@@ -251,9 +279,9 @@ for i, strategy_name in enumerate(enabled_strategies):
                     x=x, y=y, mode='markers',
                     marker=dict(size=size, color=color, symbol=symbol_shape, line=dict(width=1, color='black')),
                     name=f"{type_label}s", hovertemplate="%{hovertext}", hovertext=hover
-                ))
+                ), row=1, col=1)
 
-        # Signals
+        # Markers
         sig_buy = [s for s in strat_signals if s['signal'] == 'BUY']
         sig_sell = [s for s in strat_signals if s['signal'] == 'SELL']
         add_marker_trace(sig_buy, 'Signal', 'blue', 'star', 12)
@@ -269,7 +297,7 @@ for i, strategy_name in enumerate(enabled_strategies):
         fig.update_layout(
             title=f"{symbol} - {strategy_name}",
             yaxis_title="Price",
-            height=600,
+            height=800 if has_osc else 600,
             template="plotly_white",
             xaxis_rangeslider_visible=False
         )

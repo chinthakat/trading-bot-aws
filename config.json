@@ -48,8 +48,8 @@
                     "bb_window": 20,
                     "bb_std": 2.0,
                     "rsi_period": 14,
-                    "rsi_oversold": 30,
-                    "rsi_overbought": 70
+                    "rsi_oversold": 35,
+                    "rsi_overbought": 65
                 }
             }
         },

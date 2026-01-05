@@ -5,7 +5,8 @@ from strategies.base import BaseStrategy, StrategyResult
 class MaCrossoverStrategy(BaseStrategy):
     NAME = "MA_Crossover"
     PLOT_CONFIG = {
-        'indicators': ['sma_short', 'sma_long'],
+        'overlays': ['sma_short', 'sma_long'],
+        'oscillators': [],
         'colors': ['#FFA500', '#00FFFF'] # Orange, Cyan
     }
     
