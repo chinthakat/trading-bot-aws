@@ -90,10 +90,18 @@ def render_positions_table(db, mode):
                 if col in df.columns: 
                     df[col] = df[col].astype(float)
             
+            # Ensure entry_time exists for sorting
+            if 'entry_time' not in df.columns:
+                 df['entry_time'] = pd.NaT
+
             df = df.sort_values('entry_time', ascending=False)
             
             # Calculate Fees Column
             df['fees'] = df.apply(lambda r: float(r.get('entry_commission', 0)) + float(r.get('exit_commission', 0)), axis=1)
+
+            # Ensure status column exists
+            if 'status' not in df.columns:
+                 df['status'] = 'unknown'
 
             # Include 'request_close' in open positions view
             open_pos = df[df['status'].isin(['open', 'request_close'])].copy()

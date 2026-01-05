@@ -445,7 +445,7 @@ class DynamoManager:
                 fees = float(pos.get('entry_commission', 0)) + float(pos.get('exit_commission', 0))
                 total_fees += fees
                 
-                if pos['status'] == 'open':
+                if pos.get('status') == 'open':
                     open_pnl += pnl
                 else:
                     closed_pnl += pnl
