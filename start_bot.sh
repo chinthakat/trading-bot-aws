@@ -29,6 +29,10 @@ fi
 
 echo "Archived old logs to $ARCHIVE_DIR"
 
+# Cleanup Shared Memory DB (Prevent Locks)
+rm -f /dev/shm/trading_bot.db*
+echo "Cleared Shared DB."
+
 # Start Core
 echo "Starting Core Service..."
 nohup python3 -m app.core_service > logs/core.log 2>&1 &

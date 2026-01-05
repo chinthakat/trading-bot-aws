@@ -118,15 +118,17 @@ class SharedMemoryBot(TradingBot):
                             total_fees = float(getattr(self.position_manager.simulator, 'total_fees', 0.0))
                     else:
                         # LIVE (Simplified for USDT)
-                        # We might need to cache this to avoid Rate Limits if polling 1s
-                        # But fetch_balance is usually lightweight?
-                        # Let's throttle it? Every 10s?
                         if counter % 10 == 0:
-                            bal = self.exchange.fetch_balance()
-                            balance = float(bal.get('total', {}).get('USDT', 0))
+                            logger.info("[DEBUG] Fetching Exchange Balance...")
+                            try:
+                                bal = self.exchange.fetch_balance(params={'recvWindow': 60000}) # Add recvWindow
+                                balance = float(bal.get('total', {}).get('USDT', 0))
+                                logger.info(f"[DEBUG] Balance: {balance}")
+                            except Exception as be:
+                                logger.error(f"[DEBUG] Fetch Balance Failed: {be}")
+                                balance = getattr(self, 'last_balance', 0.0)
                         else:
-                            # Keep previous or 0? 
-                            # Better to attribute 'self.last_balance'
+                            # Keep previous or 0
                             balance = getattr(self, 'last_balance', 0.0)
                         self.last_balance = balance
 
