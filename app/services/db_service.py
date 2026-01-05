@@ -116,6 +116,16 @@ class SharedDbService:
             )
         """)
         
+        # System Status (Heartbeats)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS system_status (
+                component_id TEXT PRIMARY KEY,
+                status TEXT,
+                last_heartbeat INTEGER,
+                metadata TEXT
+            )
+        """)
+        
         # Migration: Add total_fees if missing logic (Simplistic: Catch error if col missing later)
         try:
              cursor.execute("ALTER TABLE account ADD COLUMN total_fees REAL DEFAULT 0")
@@ -238,3 +248,18 @@ class SharedDbService:
         cursor = self.conn.execute("SELECT * FROM account WHERE account_id = 'main'")
         row = cursor.fetchone()
         return dict(row) if row else None
+        
+    # --- System Status Methods ---
+    
+    def update_heartbeat(self, component_id: str, status: str = 'online', metadata: Dict = None):
+        ts = int(datetime.now().timestamp() * 1000)
+        meta_json = json.dumps(metadata) if metadata else "{}"
+        self.conn.execute("""
+            INSERT OR REPLACE INTO system_status (component_id, status, last_heartbeat, metadata)
+            VALUES (?, ?, ?, ?)
+        """, (component_id, status, ts, meta_json))
+        self.conn.commit()
+        
+    def get_system_status(self) -> List[Dict]:
+        cursor = self.conn.execute("SELECT * FROM system_status")
+        return [dict(row) for row in cursor.fetchall()]

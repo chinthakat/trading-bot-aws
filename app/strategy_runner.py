@@ -29,9 +29,15 @@ class StrategyRunner:
     def run(self):
         logger.info(f"Starting Strategy Loop for {self.strategy_name}...")
         last_processed_ts = 0
+        loop_counter = 0
+        import os
         
         while True:
             try:
+                loop_counter += 1
+                if loop_counter % 10 == 0:
+                     self.db.update_heartbeat(f"strat_{self.strategy_name}_{self.symbol}", "online", {'pid': os.getpid()})
+
                 # 1. Fetch Data
                 candles = self.db.get_recent_candles(self.symbol, limit=200)
                 if not candles:

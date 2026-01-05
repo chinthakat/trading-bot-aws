@@ -10,6 +10,7 @@ import sys
 # Add app directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from services.db_service import SharedDbService
+from admin_view import render_admin # Moved to app root
 
 # Page Config
 st.set_page_config(layout="wide", page_title="Trading Bot [SharedMem]", page_icon="⚡")
@@ -268,20 +269,26 @@ def render_strategy_tab(strategy_name, symbol):
 # --- Sidebar Navigation ---
 st.sidebar.header("Navigation")
 
+# Heartbeat
+import os
+db.update_heartbeat('dashboard', 'online', {'pid': os.getpid()})
+
 # Get Active Strategies from Config
 strategies = [name for name, cfg in config['trading']['active_strategies'].items() if cfg['enabled']]
-tabs = ["Overview"] + strategies
+tabs = ["Overview"] + strategies + ["Admin"]
 selected_tab = st.sidebar.radio("View", tabs)
 
 # Symbol Selection (Global for Strategy Views)
 symbol = None
-if selected_tab != "Overview":
+if selected_tab not in ["Overview", "Admin"]:
     st.sidebar.divider()
     symbol = st.sidebar.selectbox("Select Symbol", config['trading']['symbols'], index=0)
 
 # --- Main Content ---
 if selected_tab == "Overview":
     render_overview()
+elif selected_tab == "Admin":
+    render_admin(db)
 else:
     if symbol:
         render_strategy_tab(selected_tab, symbol)

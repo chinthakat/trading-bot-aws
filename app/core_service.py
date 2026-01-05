@@ -176,6 +176,11 @@ class SharedMemoryBot(TradingBot):
                     if counter % 60 == 0:
                         self.shared_db.log_account_history(balance, equity)
                     
+                    # 6. Heartbeat (Every 30s)
+                    if counter % 30 == 0:
+                         import os
+                         self.shared_db.update_heartbeat('core_service', 'online', {'pid': os.getpid()})
+                         
                 except Exception as err:
                     logger.error(f"Account Sync Error: {err}")
                 
