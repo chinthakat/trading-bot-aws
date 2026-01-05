@@ -7,9 +7,31 @@ pkill -9 -f "python3" # Cleanup generic wrappers if any, carefully. Actually saf
 # But 'streamlit' matches.
 
 
+# --- Log Setup ---
+mkdir -p logs/archive
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+ARCHIVE_DIR="logs/archive/$TIMESTAMP"
+mkdir -p "$ARCHIVE_DIR"
+
+# Move old logs if they exist (both root and logs/)
+# Check logs/ first
+if compgen -G "logs/*.log" > /dev/null; then
+    mv logs/*.log "$ARCHIVE_DIR/"
+fi
+# Check root for legacy logs
+if compgen -G "*.log" > /dev/null; then
+    mv *.log "$ARCHIVE_DIR/"
+fi
+# Check api_logs.txt
+if [ -f "logs/api_logs.txt" ]; then
+    mv logs/api_logs.txt "$ARCHIVE_DIR/"
+fi
+
+echo "Archived old logs to $ARCHIVE_DIR"
+
 # Start Core
 echo "Starting Core Service..."
-nohup python3 -m app.core_service > core.log 2>&1 &
+nohup python3 -m app.core_service > logs/core.log 2>&1 &
 CORE_PID=$!
 echo "Core PID: $CORE_PID"
 
@@ -33,7 +55,7 @@ try:
                 for symbol in symbols:
                     # Log File
                     clean_symbol = symbol.replace('/', '')
-                    log_file = f'strat_{name}_{clean_symbol}.log'
+                    log_file = f'logs/strat_{name}_{clean_symbol}.log'
                     
                     # Command
                     # json.dumps for params might contain spaces/quotes, so single-quote the json string
@@ -49,6 +71,5 @@ except Exception as e:
 
 # Start Dashboard
 echo "Starting Dashboard..."
-nohup streamlit run app/dashboard.py > dashboard.log 2>&1 &
-
-echo "Bot Cluster Started."
+nohup streamlit run app/dashboard.py > logs/dashboard.log 2>&1 &
+echo "Bot Cluster Started. Logs in logs/"

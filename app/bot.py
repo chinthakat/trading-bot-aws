@@ -30,8 +30,8 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("bot.log"),
-        logging.FileHandler("api_logs.txt") 
+        # logging.FileHandler("logs/bot.log"), # Let shell redirect handle this
+        logging.FileHandler("logs/api_logs.txt") 
     ]
 )
 logger = logging.getLogger(__name__)
@@ -253,7 +253,7 @@ class TradingBot:
                     enable_flip = self.config['trading'].get('enable_position_flip', False)
                     if enable_flip:
                         logger.info(f"[FLIP] Opposite signal detected: {action} vs {pos['side']}. Flipping position...")
-                        self.flip_position_logic(symbol, pos, action, price, signal_id)
+                        self.flip_position_logic(symbol, pos, action, price, signal_id, algo)
                         return
                     else:
                         self.position_manager.close_position(price)
@@ -271,7 +271,7 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Execute Trade Error: {e}")
 
-    def flip_position_logic(self, symbol, pos, action, price, signal_id):
+    def flip_position_logic(self, symbol, pos, action, price, signal_id, algo=None):
         logger.info(f"[FLIP] Flipping {pos['side']} -> {action}")
         success = self.position_manager.close_position_immediate(pos['position_id'], price, reason='flip', signal_id=signal_id)
         if success:
@@ -279,7 +279,7 @@ class TradingBot:
              order_side = action.lower()
              amount = self.position_manager.calculate_position_size(symbol, price)
              if amount:
-                 self.position_manager.place_limit_order(symbol, order_side, price, amount, signal_id=signal_id)
+                 self.position_manager.place_limit_order(symbol, order_side, price, amount, signal_id=signal_id, algo=algo)
 
     def backfill_history(self):
         limit = 500

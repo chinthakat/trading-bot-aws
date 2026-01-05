@@ -4,6 +4,7 @@ import logging
 import json
 import uuid
 from threading import Thread
+from datetime import datetime
 from app.bot import TradingBot
 from app.services.db_service import SharedDbService
 
@@ -172,6 +173,9 @@ class SharedMemoryBot(TradingBot):
                         if counter % 10 == 0:
                             logger.info(f"[DEBUG] Checking Order {oid} for {sym}. Price: {price}")
                         self.position_manager.check_order_status(oid, price)
+                if counter % 6 == 0:
+                    uptime = int(time.time() - self.start_time)
+                    with open("logs/api_logs.txt", "a") as f: f.write(f"{datetime.now()} [HEARTBEAT] Running {uptime}s | {self.latest_prices}\n")
                 for s in self.symbols:
                     if s in self.latest_prices: 
                          self.position_manager.update_position_pnl(s, self.latest_prices[s])

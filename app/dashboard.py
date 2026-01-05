@@ -37,10 +37,40 @@ refresh_rate = st.sidebar.select_slider("Refresh Rate", options=[1, 5, 10, 30, 6
 # time.sleep(refresh_rate) ... actually streamlit handles this differently or we rely on loop?
 # For now manual or simple rerun loop.
 if st.sidebar.checkbox("Auto Refresh"):
-    time.sleep(refresh_rate)
-    st.rerun()
+    # time.sleep(refresh_rate) # Removed as fragments handle their own refresh
+    st.rerun() # Keep for full page refresh if needed for non-fragment content
 
 # --- Main Logic ---
+
+@st.fragment(run_every=5)
+def render_overview_content(mode):
+     # Account Summary
+    account = db.get_account()
+    if account:
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Balance", f"${account.get('balance',0):.2f}")
+        c2.metric("Equity", f"${account.get('equity',0):.2f}")
+        c3.metric("PnL", f"${account.get('pnl',0):.2f}")
+    else:
+        st.warning("No Account Data yet.")
+
+    # Active Positions
+    st.subheader("Active Positions")
+    positions = db.get_active_positions()
+    if positions:
+        df = pd.DataFrame(positions)
+        st.dataframe(df, width='stretch')
+    else:
+        st.info("No active positions.")
+
+    # Recent Signals
+    st.subheader("Recent Signals")
+    signals = db.get_recent_signals(limit=20)
+    if signals:
+        df = pd.DataFrame(signals)
+        st.dataframe(df[['timestamp', 'strategy_name', 'symbol', 'side', 'price', 'status']], width='stretch')
+    else:
+        st.info("No recent signals.")
 
 def render_overview():
     st.header("Global Overview")
@@ -50,173 +80,133 @@ def render_overview():
     is_paper = mode in ['PAPER', 'TEST']
     
     # Tabs
-    # Highlight Active Mode
     title_live = "Live Account" + (" 🟢" if not is_paper else "")
     title_paper = "Paper Trading" + (" 🟢" if is_paper else "")
     
     t_live, t_paper = st.tabs([title_live, title_paper])
     
-    # Render Helper
-    def show_stats(active_tab):
-        if not active_tab:
-            st.warning(f"Bot is currently in {mode} mode. Switch config to activate this view.")
-            return
-
-        # Account Summary
-        account = db.get_account()
-        if account:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Balance", f"${account.get('balance',0):.2f}")
-            c2.metric("Equity", f"${account.get('equity',0):.2f}")
-            c3.metric("PnL", f"${account.get('pnl',0):.2f}")
-        else:
-            st.warning("No Account Data yet.")
-
-        # Active Positions
-        st.subheader("Active Positions")
-        positions = db.get_active_positions()
-        if positions:
-            df = pd.DataFrame(positions)
-            st.dataframe(df, use_container_width=True)
-        else:
-            st.info("No active positions.")
-
-        # Recent Signals
-        st.subheader("Recent Signals")
-        signals = db.get_recent_signals(limit=20)
-        if signals:
-            df = pd.DataFrame(signals)
-            st.dataframe(df[['timestamp', 'strategy_name', 'symbol', 'side', 'price', 'status']], use_container_width=True)
-        else:
-            st.info("No recent signals.")
-
     with t_live:
-        show_stats(not is_paper)
+        if not is_paper:
+            render_overview_content(mode)
+        else:
+            st.warning(f"Bot is in {mode} mode. Live view disabled.")
         
     with t_paper:
-        show_stats(is_paper)
+        if is_paper:
+            render_overview_content(mode)
+        else:
+            st.warning("Bot is in LIVE mode. Paper view disabled.")
+
+@st.fragment(run_every=5)
+def render_strategy_details(strategy_name, symbol):
+    # 1. Fetch Positions for this strategy
+    st.subheader("Strategy Positions")
+    all_pos = db.get_active_positions()
+    strat_pos = [p for p in all_pos if p.get('strategy_name') == strategy_name]
+    if strat_pos:
+        st.dataframe(pd.DataFrame(strat_pos), width='stretch')
+    else:
+        st.info("No active positions for this strategy.")
+
+    st.divider()
+
+    # 2. Fetch Signals for this strategy/symbol
+    st.subheader("Strategy Signals")
+    signals = db.get_recent_signals(limit=50)
+    # Filter by algo/strategy_name and symbol
+    strat_sigs = [s for s in signals if (s.get('strategy_name') == strategy_name or s.get('algo') == strategy_name) and s.get('symbol') == symbol]
+    
+    if strat_sigs:
+        df_sig = pd.DataFrame(strat_sigs)
+        # Display key columns
+        cols = ['timestamp', 'side', 'price', 'status']
+        # robust select
+        final_cols = [c for c in cols if c in df_sig.columns]
+        st.dataframe(df_sig[final_cols], width='stretch')
+    else:
+        st.info(f"No recent signals for {symbol} in {strategy_name}.")
+
+@st.fragment(run_every=5)
+def render_strategy_chart(strategy_name, symbol):
+    # Fetch Chart Data
+    st.subheader("Live Chart")
+    candles = db.get_recent_candles(symbol, limit=300)
+    if candles:
+        df = pd.DataFrame(candles)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        
+        # --- Indicator Calculation (On-the-fly) ---
+        strat_conf = config['trading']['active_strategies'].get(strategy_name, {})
+        params = strat_conf.get('params', {})
+        short_p = params.get('short_period', 10)
+        long_p = params.get('long_period', 100)
+        
+        # Calculate SMAs
+        import ta
+        df['SMA_Fast'] = ta.trend.sma_indicator(df['close'], window=short_p)
+        df['SMA_Slow'] = ta.trend.sma_indicator(df['close'], window=long_p)
+        
+        # --- Plotting ---
+        fig = go.Figure()
+        
+        # Candlestick
+        fig.add_trace(go.Candlestick(
+            x=df['timestamp'],
+            open=df['open'], high=df['high'],
+            low=df['low'], close=df['close'],
+            name='Price'
+        ))
+        
+        # SMAs
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['SMA_Fast'], mode='lines', name=f'SMA {short_p}', line=dict(color='orange', width=1)))
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['SMA_Slow'], mode='lines', name=f'SMA {long_p}', line=dict(color='blue', width=1)))
+        
+        # Signals Visualization (Backtest/Theoretical)
+        try:
+            df['prev_fast'] = df['SMA_Fast'].shift(1)
+            df['prev_slow'] = df['SMA_Slow'].shift(1)
+            buy_signals = df[(df['prev_fast'] <= df['prev_slow']) & (df['SMA_Fast'] > df['SMA_Slow'])]
+            sell_signals = df[(df['prev_fast'] >= df['prev_slow']) & (df['SMA_Fast'] < df['SMA_Slow'])]
+            
+            fig.add_trace(go.Scatter(x=buy_signals['timestamp'], y=buy_signals['close'], mode='markers', name='Signal (Buy)', marker=dict(symbol='triangle-up', size=10, color='green')))
+            fig.add_trace(go.Scatter(x=sell_signals['timestamp'], y=sell_signals['close'], mode='markers', name='Signal (Sell)', marker=dict(symbol='triangle-down', size=10, color='red')))
+        except: pass
+
+        # Executed Signals Overlay (Real)
+        signals = db.get_recent_signals(limit=100)
+        strat_signals = [s for s in signals if s['strategy_name'] == strategy_name and s['symbol'] == symbol]
+        for s in strat_signals:
+            ts = pd.to_datetime(s['timestamp'], unit='ms')
+            color = 'green' if s['side'] == 'BUY' else 'red'
+            fig.add_annotation(x=ts, y=s['price'], text="📢 EXECUTED", showarrow=True, arrowhead=1, arrowcolor=color, opacity=0.8)
+
+        # Default Zoom
+        if len(df) > 60:
+            min_x = df['timestamp'].iloc[-60]
+            max_x = df['timestamp'].iloc[-1] + pd.Timedelta(minutes=5)
+            range_x = [min_x, max_x]
+        else:
+            range_x = None
+
+        fig.update_layout(height=600, xaxis_rangeslider_visible=False, title=f"{symbol} ({config['trading'].get('interval', '1m')})", yaxis_title="Price", xaxis=dict(range=range_x) if range_x else None)
+
+        st.plotly_chart(fig)
+    else:
+        st.warning("Waiting for Market Data...")
 
 def render_strategy_tab(strategy_name):
     st.header(f"Strategy: {strategy_name}")
     
-    # Sub-Tabs
-    tab_chart, tab_pos = st.tabs(["Live Chart", "Strategy Positions"])
+    # Selection (Outside Fragment to maintain state)
+    symbol = st.selectbox("Select Symbol", config['trading']['symbols'], key=f"sel_{strategy_name}")
     
-    with tab_pos:
-        st.subheader("Strategy Positions")
-        all_pos = db.get_active_positions()
-        strat_pos = [p for p in all_pos if p.get('strategy_name') == strategy_name]
-        if strat_pos:
-            st.dataframe(pd.DataFrame(strat_pos))
-        else:
-            st.info("No active positions for this strategy.")
-
+    tab_chart, tab_details = st.tabs(["Live Chart", "Positions & Signals"])
+    
     with tab_chart:
-        st.subheader("Live Chart")
-        symbol = st.selectbox("Select Symbol", config['trading']['symbols'], key=f"sel_{strategy_name}")
+        render_strategy_chart(strategy_name, symbol)
         
-        candles = db.get_recent_candles(symbol, limit=300)
-        if candles:
-            df = pd.DataFrame(candles)
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            
-            # --- Indicator Calculation (On-the-fly) ---
-            # Try to match Strategy Params
-            strat_conf = config['trading']['active_strategies'].get(strategy_name, {})
-            params = strat_conf.get('params', {})
-            
-            # MA Crossover Specifics
-            short_p = params.get('short_period', 10)
-            long_p = params.get('long_period', 100)
-            
-            # Calculate SMAs
-            import ta
-            df['SMA_Fast'] = ta.trend.sma_indicator(df['close'], window=short_p)
-            df['SMA_Slow'] = ta.trend.sma_indicator(df['close'], window=long_p)
-            
-            # --- Plotting ---
-            fig = go.Figure()
-            
-            # Candlestick
-            fig.add_trace(go.Candlestick(
-                x=df['timestamp'],
-                open=df['open'], high=df['high'],
-                low=df['low'], close=df['close'],
-                name='Price'
-            ))
-            
-            # SMAs
-            fig.add_trace(go.Scatter(x=df['timestamp'], y=df['SMA_Fast'], mode='lines', name=f'SMA {short_p}', line=dict(color='orange', width=1)))
-            fig.add_trace(go.Scatter(x=df['timestamp'], y=df['SMA_Slow'], mode='lines', name=f'SMA {long_p}', line=dict(color='blue', width=1)))
-            
-            # --- Visual Indicators (Backtest View) ---
-            # Detect Crossovers in the loaded DF to show "Theoretical" signals
-            # This helps user see what the strategy WOULD have done in history
-            try:
-                # Vectorized crossover detection
-                df['prev_fast'] = df['SMA_Fast'].shift(1)
-                df['prev_slow'] = df['SMA_Slow'].shift(1)
-                
-                # Buy: Fast crosses above Slow
-                buy_signals = df[(df['prev_fast'] <= df['prev_slow']) & (df['SMA_Fast'] > df['SMA_Slow'])]
-                
-                # Sell: Fast crosses below Slow
-                sell_signals = df[(df['prev_fast'] >= df['prev_slow']) & (df['SMA_Fast'] < df['SMA_Slow'])]
-                
-                # Plot Buys
-                fig.add_trace(go.Scatter(
-                    x=buy_signals['timestamp'], y=buy_signals['close'],
-                    mode='markers', name='Signal (Buy)',
-                    marker=dict(symbol='triangle-up', size=10, color='green')
-                ))
-                
-                # Plot Sells
-                fig.add_trace(go.Scatter(
-                    x=sell_signals['timestamp'], y=sell_signals['close'],
-                    mode='markers', name='Signal (Sell)',
-                    marker=dict(symbol='triangle-down', size=10, color='red')
-                ))
-            except Exception as e:
-                pass # Squelch calc errors if data insufficient
-
-            # Executed Signals Overlay (Real)
-            signals = db.get_recent_signals(limit=100)
-            strat_signals = [s for s in signals if s['strategy_name'] == strategy_name and s['symbol'] == symbol]
-            
-            for s in strat_signals:
-                ts = pd.to_datetime(s['timestamp'], unit='ms')
-                color = 'green' if s['side'] == 'BUY' else 'red'
-                # Marker position (slightly off price)
-                price = s['price']
-                fig.add_annotation(
-                    x=ts, y=price,
-                    text="📢 EXECUTED",
-                    showarrow=True,
-                    arrowhead=1,
-                    arrowcolor=color,
-                    # bgcolor="black",
-                    opacity=0.8
-                )
-
-            # Default Zoom to last 60 candles (1 hour for 1m)
-            if len(df) > 60:
-                min_x = df['timestamp'].iloc[-60]
-                max_x = df['timestamp'].iloc[-1] + pd.Timedelta(minutes=5) # Small buffer forward
-                range_x = [min_x, max_x]
-            else:
-                range_x = None
-
-            fig.update_layout(
-                height=600,
-                xaxis_rangeslider_visible=False, # Better zoom behavior
-                title=f"{symbol} ({config['trading'].get('interval', '1m')})",
-                yaxis_title="Price",
-                xaxis=dict(range=range_x) if range_x else None
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("Waiting for Market Data...")
+    with tab_details:
+        render_strategy_details(strategy_name, symbol)
 
 # --- Tabs ---
 # Get Active Strategies from Config
