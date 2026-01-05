@@ -16,19 +16,23 @@ def render_account_summary(db, mode, config):
     pnl_stats = db.get_account_pnl(mode=mode)
     
     # Calculate Balance & Equity
+    # Calculate Balance & Equity
     if mode == "TEST":
-        # Try to get persisted balance first (Most Accurate)
+        # Use persisted balance from DB (Source of Truth)
+        # This balance already includes: Initial - EntryFees + RealizedPnL
         test_acct = db.get_test_account_balance()
         if test_acct:
             current_balance = test_acct['balance']
         else:
-            # Fallback
-            initial = config['trading'].get('test_initial_balance', 10000.0)
-            current_balance = initial + pnl_stats['closed_pnl']
+            # Fallback if DB empty (shouldn't happen with proper init)
+            current_balance = config['trading'].get('test_initial_balance', 10000.0)
     else:
-        # LIVE Mode: We don't have wallet fetch yet, so use PnL accumulator
-        initial = 0.0 
-        current_balance = initial + pnl_stats['closed_pnl']
+        # LIVE Mode: Placeholder until Wallet API is integrated
+        # For now, we unfortunately still have to guess or set to 0
+        current_balance = 0.0 
+        pnl_stats = db.get_account_pnl(mode=mode) # Refresh stats
+        # Maybe use closed_pnl relative to 0? 
+        current_balance = pnl_stats['closed_pnl']
 
     # Calculate Equity (Futures/Margin: Balance + Open PnL)
     # Balance is Collateral (Wallet)

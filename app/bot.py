@@ -274,12 +274,30 @@ class TradingBot:
     def flip_position_logic(self, symbol, pos, action, price, signal_id):
         logger.info(f"[FLIP] Flipping {pos['side']} -> {action}")
         success = self.position_manager.close_position_immediate(pos['position_id'], price, reason='flip', signal_id=signal_id)
+        
         if success:
-             # Use 'buy'/'sell' for Orders
-             order_side = action.lower()
-             amount = self.position_manager.calculate_position_size(symbol, price)
-             if amount:
-                 self.position_manager.place_limit_order(symbol, order_side, price, amount, signal_id=signal_id)
+             # FIX: Flip Logic Deadlock
+             # Wait for position to actually close (confirmed via sync_state)
+             # Timeout 30s
+             logger.info("[FLIP] Waiting for close confirmation...")
+             start_wait = time.time()
+             closed_confirmed = False
+             
+             while time.time() - start_wait < 30:
+                 self.position_manager.sync_state(self.latest_prices)
+                 if self.position_manager.current_position is None:
+                     closed_confirmed = True
+                     break
+                 time.sleep(0.5)
+                 
+             if closed_confirmed:
+                 logger.info("[FLIP] Close confirmed. Placing new order.")
+                 order_side = action.lower()
+                 amount = self.position_manager.calculate_position_size(symbol, price)
+                 if amount:
+                     self.position_manager.place_limit_order(symbol, order_side, price, amount, signal_id=signal_id)
+             else:
+                 logger.error("[FLIP] Timeout waiting for close. Flip aborted to prevent dual position.")
 
     def backfill_history(self):
         limit = 500

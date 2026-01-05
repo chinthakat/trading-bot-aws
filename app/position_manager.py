@@ -118,16 +118,26 @@ class PositionManager:
     def can_open_position(self, symbol: str) -> bool:
         # 1. Check Local Active Position
         if self.current_position is not None:
-             logger.warning(f"Cannot open position for {symbol}: already have open position (Local)")
-             return False
+             # FIX: Desync Risk - If closing, allow new signal to proceed (flip logic handles wait)
+             status = self.current_position.get('status')
+             if status in ['request_close', 'closing']:
+                 logger.info(f"Position {symbol} is {status}. Allowing new signal check (Flip).")
+             else:
+                 logger.warning(f"Cannot open position for {symbol}: already have open position (Local)")
+                 return False
         
         # 2. Check Simulator/DB State (Source of Truth)
         if self.mode == "TEST":
-            if self.simulator.get_position(symbol):
-                logger.warning(f"Cannot open position for {symbol}: Simulator has open position (Desync prevented)")
-                # Self-heal
-                self.current_position = self.simulator.get_position(symbol)
-                return False
+            sim_pos = self.simulator.get_position(symbol)
+            if sim_pos:
+                status = sim_pos.get('status')
+                if status in ['request_close', 'closing']:
+                    pass # Allow
+                else:
+                    logger.warning(f"Cannot open position for {symbol}: Simulator has open position (Desync prevented)")
+                    # Self-heal
+                    self.current_position = sim_pos
+                    return False
                 
         # 3. Check Pending Entry Orders (Specific to symbol)
         # Note: self.pending_orders is a dict of all orders. Filter by symbol.
@@ -176,12 +186,17 @@ class PositionManager:
             if qty > max_qty_cost:
                 qty = max_qty_cost * 0.99  # 99% of balance to be safe with fees
                 
-            # 5. Enforce Min/Max/Precision
-            # TODO: Add precision check
+            # 5. Enforce Min/Max/Precision (FIX: Precision Error)
+            amount = self.exchange.amount_to_precision(symbol, qty)
+            # Convert back to float for internal logic handling as CCXT returns string often
+            amount = float(amount)
             
-            logger.info(f"Calculated Size: Bal=${balance}, Risk=${risk_amount:.2f}, Qty={qty:.6f}")
+            if amount < min_amount:
+                amount = min_amount
             
-            return max(qty, min_amount)
+            logger.info(f"Calculated Size: Bal=${balance}, Risk=${risk_amount:.2f}, Qty={amount:.6f} (Precision Enforced)")
+            
+            return amount
 
         except Exception as e:
             logger.error(f"Error calculating position size: {e}")
@@ -198,16 +213,27 @@ class PositionManager:
             offset_pct = self.max_slippage_pct
             limit_price = current_price * (1 + offset_pct) if side == 'buy' else current_price * (1 - offset_pct)
             
-            # Calculate SL/TP if not provided
+            # FIX: Precision Enforced on Limit Price
+            limit_price = float(self.exchange.price_to_precision(symbol, limit_price))
+
+            # FIX: Calculate SL/TP based on CURRENT MARKET PRICE (not inflated Limit Price)
+            # This minimizes slippage error in risk calc.
             sl_price = None
             tp_price = None
+            
             if order_type == 'entry':
+                # Use current_price (Market) for cleaner levels
+                ref_price = current_price 
                 if side == 'buy': # Long
-                     sl_price = limit_price * (1 - self.sl_pct)
-                     tp_price = limit_price * (1 + self.tp_pct)
-                else: # Short (not fully supported yet but logic implies)
-                     sl_price = limit_price * (1 + self.sl_pct)
-                     tp_price = limit_price * (1 - self.tp_pct)
+                     sl_price = ref_price * (1 - self.sl_pct)
+                     tp_price = ref_price * (1 + self.tp_pct)
+                else: # Short
+                     sl_price = ref_price * (1 + self.sl_pct)
+                     tp_price = ref_price * (1 - self.tp_pct)
+                     
+                # Round SL/TP
+                sl_price = float(self.exchange.price_to_precision(symbol, sl_price))
+                tp_price = float(self.exchange.price_to_precision(symbol, tp_price))
 
             
             if self.mode == "TEST":
@@ -232,7 +258,9 @@ class PositionManager:
                 
             else: # LIVE
                 market = self.exchange.market(symbol)
-                limit_price = self.exchange.price_to_precision(symbol, limit_price)
+                # Double check precision (redundant but safe)
+                limit_price = float(self.exchange.price_to_precision(symbol, limit_price))
+                amount = float(self.exchange.amount_to_precision(symbol, amount))
                 
                 logger.info(f"[LIVE] Placing {side} limit order: {symbol} @ {limit_price}")
                 
@@ -252,6 +280,9 @@ class PositionManager:
                     'type': order_type,
                     'signal_id': signal_id
                 }
+                
+                if sl_price: order_data['stop_loss'] = sl_price
+                if tp_price: order_data['take_profit'] = tp_price
                 
                 self.pending_orders[order['id']] = order_data
                 self.db.log_order(order_data)
@@ -471,14 +502,18 @@ class PositionManager:
              qty = pos['quantity']
              entry = pos['entry_price']
              
-             # Gross PnL
+             # Gross PnL (Price Movement)
              gross_pnl = (current_price - entry)*qty if pos['side'] == 'long' else (entry - current_price)*qty
              
-             # Net PnL (Deduct Entry fee + Est Exit fee)
-             entry_comm = pos.get('entry_commission', 0.0)
-             est_exit_comm = (current_price * qty) * self.commission_rate
+             # FIX: Use Gross PnL for Open Positions in DB
+             # Why?
+             # 1. 'Balance' (Cash) already has Entry Commission deducted (Futures Model).
+             # 2. Deducting Entry Comm again here would double-count it in 'Equity = Balance + OpenPnL'.
+             # 3. We also stop deducting 'Estimated Exit Comm' to align with standard 'Open PnL' (Gross) expectations 
+             #    and avoid confusion where Equity < Cash immediately upon entry due to future fees.
              
-             net_pnl = gross_pnl - entry_comm - est_exit_comm
+             # net_pnl = gross_pnl - entry_comm - est_exit_comm  <-- OLD (Double Count)
+             net_pnl = gross_pnl 
              
              pos['pnl'] = net_pnl
              self.db.update_position_pnl(pos['position_id'], net_pnl, current_price, self.mode)
