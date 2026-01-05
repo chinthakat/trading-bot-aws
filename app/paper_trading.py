@@ -17,15 +17,26 @@ class PaperTradingSimulator:
     """
     
     def __init__(self, initial_balance: float, db=None, commission_rate=0.001):
-        self.balance = float(initial_balance)
         self.db = db  # Persistence instance
         self.commission_rate = float(commission_rate)
+        
+        # Try Loading Balance from DB
+        self.balance = float(initial_balance)
+        if self.db:
+            saved_bal = self.db.get_test_account_balance()
+            if saved_bal and 'balance' in saved_bal:
+                self.balance = float(saved_bal['balance'])
+                logger.info(f"Restored Paper Balance: ${self.balance:,.2f}")
+        
         self.positions = {}  # symbol -> position dict
         self.pending_orders = {}  # order_id -> order dict
         self.filled_orders = []
         self.closed_positions = []
         
         logger.info(f"Paper Trading Simulator initialized with ${self.balance:,.2f} (Comm: {self.commission_rate*100}%)")
+
+    def get_balance(self) -> float:
+        return self.balance
 
     def load_state(self, positions: List[Dict], orders: List[Dict]):
         """Load state from DB (called by PositionManager)."""
@@ -37,7 +48,7 @@ class PaperTradingSimulator:
             
         logger.info(f"Simulator loaded state: {len(self.positions)} positions, {len(self.pending_orders)} orders")
 
-    def place_limit_order(self, symbol: str, side: str, price: float, amount: float, expires_at: datetime = None) -> Dict:
+    def place_limit_order(self, symbol: str, side: str, price: float, amount: float, expires_at: datetime = None, algo: str = None) -> Dict:
         """
         Place a virtual limit order.
         """
@@ -58,7 +69,8 @@ class PaperTradingSimulator:
             'created_at': timestamp,
             'expires_at': expires_at,
             'filled_at': None,
-            'fill_price': None
+            'fill_price': None,
+            'strategy_name': algo
         }
         
         self.pending_orders[order_id] = order
@@ -204,7 +216,8 @@ class PaperTradingSimulator:
                     'pnl': 0.0,
                     'entry_commission': commission,
                     'stop_loss': order.get('stop_loss'),
-                    'take_profit': order.get('take_profit')
+                    'take_profit': order.get('take_profit'),
+                    'strategy_name': order.get('strategy_name', 'manual')
                 }
                 self.positions[symbol] = new_pos
                 if self.db:
@@ -248,7 +261,8 @@ class PaperTradingSimulator:
                     'pnl': 0.0,
                     'entry_commission': commission,
                     'stop_loss': order.get('stop_loss'),
-                    'take_profit': order.get('take_profit')
+                    'take_profit': order.get('take_profit'),
+                    'strategy_name': order.get('strategy_name', 'manual')
                   }
                   self.positions[symbol] = new_pos
                   if self.db:

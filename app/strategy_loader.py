@@ -4,7 +4,7 @@ import pkgutil
 import inspect
 import logging
 from typing import Dict, Type
-from strategies.base import BaseStrategy
+from app.strategies.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ class StrategyLoader:
     @classmethod
     def discover_strategies(cls):
         """Scan the 'strategies' package for plugins."""
-        import strategies
+        import app.strategies as strategies
         
         path = strategies.__path__
         prefix = strategies.__name__ + "."

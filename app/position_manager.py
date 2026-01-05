@@ -187,7 +187,7 @@ class PositionManager:
             logger.error(f"Error calculating position size: {e}")
             return None
 
-    def place_limit_order(self, symbol: str, side: str, current_price: float, amount: float, order_type: str = 'entry', signal_id: str = None) -> Optional[Dict]:
+    def place_limit_order(self, symbol: str, side: str, current_price: float, amount: float, order_type: str = 'entry', signal_id: str = None, algo: str = None) -> Optional[Dict]:
         """
         Unified Place Order.
         Calculates Limit Price (with small offset).
@@ -214,7 +214,8 @@ class PositionManager:
                 # Simulator handles DB persistence internally now!
                 order = self.simulator.place_limit_order(
                     symbol, side, limit_price, amount, 
-                    expires_at=datetime.now() + timedelta(seconds=self.order_ttl_seconds)
+                    expires_at=datetime.now() + timedelta(seconds=self.order_ttl_seconds),
+                    algo=algo
                 )
                 
                 # Enrich with metadata NOT stored in DB core schema but useful for local logic
@@ -222,6 +223,7 @@ class PositionManager:
                 if sl_price: order['stop_loss'] = sl_price
                 if tp_price: order['take_profit'] = tp_price
                 if signal_id: order['signal_id'] = signal_id
+                if algo: order['strategy_name'] = algo
                 
                 self.pending_orders[order['order_id']] = order
                 
@@ -250,7 +252,8 @@ class PositionManager:
                     'created_at': datetime.now(),
                     'expires_at': datetime.now() + timedelta(seconds=self.order_ttl_seconds),
                     'type': order_type,
-                    'signal_id': signal_id
+                    'signal_id': signal_id,
+                    'strategy_name': algo
                 }
                 
                 self.pending_orders[order['id']] = order_data

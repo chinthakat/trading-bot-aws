@@ -1,201 +1,230 @@
+
 import streamlit as st
 import pandas as pd
 import json
-import boto3
+import plotly.graph_objects as go
 import time
-from datetime import datetime
 import os
 import sys
 
 # Add app directory to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from persistence import DynamoManager
+from services.db_service import SharedDbService
 
 # Page Config
-st.set_page_config(
-    page_title="Crypto Bot Dashboard",
-    page_icon="📈",
-    layout="wide"
-)
+st.set_page_config(layout="wide", page_title="Trading Bot [SharedMem]", page_icon="⚡")
 
-# Load Config
+# Initialize DB
+try:
+    db = SharedDbService()
+    st.sidebar.success("Connected to /dev/shm Shared DB")
+except Exception as e:
+    st.error(f"DB Connection Failed: {e}")
+    st.stop()
+
+# Helper: Load Config
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'config.json')
-
 def load_config():
-    with open(CONFIG_PATH, 'r') as f:
-        return json.load(f)
-
-def save_config(config):
-    with open(CONFIG_PATH, 'w') as f:
-        json.dump(config, f, indent=4)
-
+    with open(CONFIG_PATH, 'r') as f: return json.load(f)
 config = load_config()
 
-# Helper: DynamoDB Connection
-# Re-using persistence logic slightly modified for st caching usually, but here direct import
-# Note: Streamlit re-runs script on interaction
-try:
-    db = DynamoManager(config)
-    db_connected = True
-except Exception as e:
-    st.error(f"Failed to connect to DynamoDB: {e}")
-    db_connected = False
+# --- Sidebar ---
+st.sidebar.header("Control Panel")
+if st.sidebar.button("Refresh"): st.rerun()
 
-# Sidebar: Controls
-st.sidebar.title("Configuration")
-
-# Trading Status
-st.sidebar.subheader("Status")
-if st.sidebar.button("Refresh Data"):
+# Auto Refresh
+refresh_rate = st.sidebar.select_slider("Refresh Rate", options=[1, 5, 10, 30, 60], value=5)
+# time.sleep(refresh_rate) ... actually streamlit handles this differently or we rely on loop?
+# For now manual or simple rerun loop.
+if st.sidebar.checkbox("Auto Refresh"):
+    time.sleep(refresh_rate)
     st.rerun()
 
-# Config Editor
-st.sidebar.markdown("---")
-st.sidebar.subheader("Strategy Config")
+# --- Main Logic ---
 
-# Enable/Disable Strategies
-active_strategies = config['trading']['active_strategies']
-for name, settings in active_strategies.items():
-    st.sidebar.markdown(f"**{name}**")
-    enabled = st.sidebar.checkbox("Enabled", value=settings['enabled'], key=f"{name}_enabled")
+def render_overview():
+    st.header("Global Overview")
     
-    # Params
-    params = settings['params']
-    new_params = {}
-    for p_key, p_val in params.items():
-        new_params[p_key] = st.sidebar.number_input(f"{p_key}", value=p_val, key=f"{name}_{p_key}")
+    # Determine Mode
+    mode = config['trading'].get('mode', 'LIVE')
+    is_paper = mode in ['PAPER', 'TEST']
     
-    # Update Config Object
-    config['trading']['active_strategies'][name]['enabled'] = enabled
-    config['trading']['active_strategies'][name]['params'] = new_params
-
-if st.sidebar.button("Save Configuration"):
-    save_config(config)
-    st.sidebar.success("Configuration saved! Restart bot to apply.")
-
-# Main Content
-st.title("🤖 Binance Day Trading Bot")
-
-# Tabs
-tab1, tab2 = st.tabs(["Overview", "Audit Logs"])
-
-with tab1:
-    col1, col2 = st.columns(2)
+    # Tabs
+    # Highlight Active Mode
+    title_live = "Live Account" + (" 🟢" if not is_paper else "")
+    title_paper = "Paper Trading" + (" 🟢" if is_paper else "")
     
-    with col1:
-        st.subheader("Recent Trades")
-        if db_connected:
-            trades = db.get_trades(limit=20)
-            if trades:
-                df_trades = pd.DataFrame(trades)
-                # Convert decimal to float for display
-                df_trades['price'] = df_trades['price'].astype(float)
-                df_trades['amount'] = df_trades['amount'].astype(float)
-                # Fix: Ensure timestamp is numeric
-                df_trades['timestamp'] = pd.to_numeric(df_trades['timestamp'])
-                df_trades['timestamp'] = pd.to_datetime(df_trades['timestamp'], unit='ms')
+    t_live, t_paper = st.tabs([title_live, title_paper])
+    
+    # Render Helper
+    def show_stats(active_tab):
+        if not active_tab:
+            st.warning(f"Bot is currently in {mode} mode. Switch config to activate this view.")
+            return
+
+        # Account Summary
+        account = db.get_account()
+        if account:
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Balance", f"${account.get('balance',0):.2f}")
+            c2.metric("Equity", f"${account.get('equity',0):.2f}")
+            c3.metric("PnL", f"${account.get('pnl',0):.2f}")
+        else:
+            st.warning("No Account Data yet.")
+
+        # Active Positions
+        st.subheader("Active Positions")
+        positions = db.get_active_positions()
+        if positions:
+            df = pd.DataFrame(positions)
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No active positions.")
+
+        # Recent Signals
+        st.subheader("Recent Signals")
+        signals = db.get_recent_signals(limit=20)
+        if signals:
+            df = pd.DataFrame(signals)
+            st.dataframe(df[['timestamp', 'strategy_name', 'symbol', 'side', 'price', 'status']], use_container_width=True)
+        else:
+            st.info("No recent signals.")
+
+    with t_live:
+        show_stats(not is_paper)
+        
+    with t_paper:
+        show_stats(is_paper)
+
+def render_strategy_tab(strategy_name):
+    st.header(f"Strategy: {strategy_name}")
+    
+    # Sub-Tabs
+    tab_chart, tab_pos = st.tabs(["Live Chart", "Strategy Positions"])
+    
+    with tab_pos:
+        st.subheader("Strategy Positions")
+        all_pos = db.get_active_positions()
+        strat_pos = [p for p in all_pos if p.get('strategy_name') == strategy_name]
+        if strat_pos:
+            st.dataframe(pd.DataFrame(strat_pos))
+        else:
+            st.info("No active positions for this strategy.")
+
+    with tab_chart:
+        st.subheader("Live Chart")
+        symbol = st.selectbox("Select Symbol", config['trading']['symbols'], key=f"sel_{strategy_name}")
+        
+        candles = db.get_recent_candles(symbol, limit=300)
+        if candles:
+            df = pd.DataFrame(candles)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            
+            # --- Indicator Calculation (On-the-fly) ---
+            # Try to match Strategy Params
+            strat_conf = config['trading']['active_strategies'].get(strategy_name, {})
+            params = strat_conf.get('params', {})
+            
+            # MA Crossover Specifics
+            short_p = params.get('short_period', 10)
+            long_p = params.get('long_period', 100)
+            
+            # Calculate SMAs
+            import ta
+            df['SMA_Fast'] = ta.trend.sma_indicator(df['close'], window=short_p)
+            df['SMA_Slow'] = ta.trend.sma_indicator(df['close'], window=long_p)
+            
+            # --- Plotting ---
+            fig = go.Figure()
+            
+            # Candlestick
+            fig.add_trace(go.Candlestick(
+                x=df['timestamp'],
+                open=df['open'], high=df['high'],
+                low=df['low'], close=df['close'],
+                name='Price'
+            ))
+            
+            # SMAs
+            fig.add_trace(go.Scatter(x=df['timestamp'], y=df['SMA_Fast'], mode='lines', name=f'SMA {short_p}', line=dict(color='orange', width=1)))
+            fig.add_trace(go.Scatter(x=df['timestamp'], y=df['SMA_Slow'], mode='lines', name=f'SMA {long_p}', line=dict(color='blue', width=1)))
+            
+            # --- Visual Indicators (Backtest View) ---
+            # Detect Crossovers in the loaded DF to show "Theoretical" signals
+            # This helps user see what the strategy WOULD have done in history
+            try:
+                # Vectorized crossover detection
+                df['prev_fast'] = df['SMA_Fast'].shift(1)
+                df['prev_slow'] = df['SMA_Slow'].shift(1)
                 
-                st.dataframe(df_trades[['timestamp', 'symbol', 'action', 'price', 'amount', 'algo']])
+                # Buy: Fast crosses above Slow
+                buy_signals = df[(df['prev_fast'] <= df['prev_slow']) & (df['SMA_Fast'] > df['SMA_Slow'])]
+                
+                # Sell: Fast crosses below Slow
+                sell_signals = df[(df['prev_fast'] >= df['prev_slow']) & (df['SMA_Fast'] < df['SMA_Slow'])]
+                
+                # Plot Buys
+                fig.add_trace(go.Scatter(
+                    x=buy_signals['timestamp'], y=buy_signals['close'],
+                    mode='markers', name='Signal (Buy)',
+                    marker=dict(symbol='triangle-up', size=10, color='green')
+                ))
+                
+                # Plot Sells
+                fig.add_trace(go.Scatter(
+                    x=sell_signals['timestamp'], y=sell_signals['close'],
+                    mode='markers', name='Signal (Sell)',
+                    marker=dict(symbol='triangle-down', size=10, color='red')
+                ))
+            except Exception as e:
+                pass # Squelch calc errors if data insufficient
+
+            # Executed Signals Overlay (Real)
+            signals = db.get_recent_signals(limit=100)
+            strat_signals = [s for s in signals if s['strategy_name'] == strategy_name and s['symbol'] == symbol]
+            
+            for s in strat_signals:
+                ts = pd.to_datetime(s['timestamp'], unit='ms')
+                color = 'green' if s['side'] == 'BUY' else 'red'
+                # Marker position (slightly off price)
+                price = s['price']
+                fig.add_annotation(
+                    x=ts, y=price,
+                    text="📢 EXECUTED",
+                    showarrow=True,
+                    arrowhead=1,
+                    arrowcolor=color,
+                    # bgcolor="black",
+                    opacity=0.8
+                )
+
+            # Default Zoom to last 60 candles (1 hour for 1m)
+            if len(df) > 60:
+                min_x = df['timestamp'].iloc[-60]
+                max_x = df['timestamp'].iloc[-1] + pd.Timedelta(minutes=5) # Small buffer forward
+                range_x = [min_x, max_x]
             else:
-                st.info("No trades found.")
-        else:
-            st.warning("DB Not Connected")
-    
-    with col2:
-        st.subheader("Performance / Stats")
-        st.markdown("Total PnL: **$0.00** (Not Implemented yet in data)")
-        
-        st.markdown("---")
-        st.subheader("Price Analysis")
-        
-        if db_connected:
-            # Symbol Selector
-            symbols = config['trading']['symbols']
-            selected_symbol = st.selectbox("Select Symbol", symbols)
-            
-            # Date Range / Limit selector
-            limit = st.slider("History Check (datapoints)", 50, 500, 200)
-            
-            if st.button("Load Graph"):
-                with st.spinner("Fetching data..."):
-                    try:
-                        prices = db.get_price_history(selected_symbol, limit=limit)
-                        
-                        if prices:
-                            df = pd.DataFrame(prices)
-                            df['price'] = df['price'].astype(float)
-                            df['timestamp'] = pd.to_numeric(df['timestamp'])
-                            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-                            df = df.set_index('timestamp')
-                            
-                            # Calculate Indicators on the fly
-                            import ta
-                            
-                            ma_params = config['trading']['active_strategies']['MA_Crossover']['params']
-                            short_window = ma_params['short_period']
-                            long_window = ma_params['long_period']
-                            
-                            df[f'SMA_{short_window}'] = ta.trend.sma_indicator(df['price'], window=short_window)
-                            df[f'SMA_{long_window}'] = ta.trend.sma_indicator(df['price'], window=long_window)
-                            
-                            chart_data = df[['price', f'SMA_{short_window}', f'SMA_{long_window}']]
-                            
-                            st.line_chart(chart_data)
-                            
-                            # Show latest values
-                            latest = df.iloc[-1]
-                            st.metric("Latest Price", f"${latest['price']:.2f}")
-                            st.text(f"SMA {short_window}: {latest[f'SMA_{short_window}']:.2f}")
-                            st.text(f"SMA {long_window}: {latest[f'SMA_{long_window}']:.2f}")
-                            
-                        else:
-                            st.warning(f"No price data found for {selected_symbol}.")
-                            
-                    except Exception as e:
-                        st.error(f"Error loading graph: {e}")
-        else:
-            st.warning("DB Not Connected - Cannot plot graphs.")
+                range_x = None
 
-with tab2:
-    st.subheader("Audit Logs (Signals & Orders)")
-    if db_connected:
-        mode = config['trading'].get('mode', 'LIVE')
-        logs = db.get_audit_logs(limit=100, mode=mode)
-        
-        if logs:
-            df_audit = pd.DataFrame(logs)
-            
-            # Process Columns
-            # Ensure required columns exist even if some rows miss them
-            desired_cols = ['timestamp', 'signal_id', 'action', 'symbol', 'side', 'price', 'cause', 'details']
-            for c in desired_cols:
-                if c not in df_audit.columns:
-                    df_audit[c] = None
-            
-            # Format Timestamp
-            df_audit['timestamp'] = pd.to_numeric(df_audit['timestamp'])
-            df_audit['timestamp'] = pd.to_datetime(df_audit['timestamp'], unit='ms')
-            
-            # Format Price
-            df_audit['price'] = df_audit['price'].astype(float)
-            
-            # Reorder
-            df_audit = df_audit[desired_cols]
-            
-            # Display
-            st.dataframe(
-                df_audit,
-                column_config={
-                    "timestamp": st.column_config.DatetimeColumn("Time", format="D MMM, HH:mm:ss"),
-                    "signal_id": st.column_config.TextColumn("Signal ID", width="medium"),
-                    "price": st.column_config.NumberColumn("Price", format="$%.2f"),
-                    "details": st.column_config.Column("Details", width="large")
-                },
-                use_container_width=True
+            fig.update_layout(
+                height=600,
+                xaxis_rangeslider_visible=False, # Better zoom behavior
+                title=f"{symbol} ({config['trading'].get('interval', '1m')})",
+                yaxis_title="Price",
+                xaxis=dict(range=range_x) if range_x else None
             )
-        else:
-            st.info("No audit logs found.")
 
-st.markdown("---")
-st.markdown("### System Logs")
-st.text("To view logs, check AWS CloudWatch or the running EC2 shell.")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Waiting for Market Data...")
+
+# --- Tabs ---
+# Get Active Strategies from Config
+strategies = [name for name, cfg in config['trading']['active_strategies'].items() if cfg['enabled']]
+tabs = ["Overview"] + strategies
+selected_tab = st.radio("View", tabs, horizontal=True)
+
+if selected_tab == "Overview":
+    render_overview()
+else:
+    render_strategy_tab(selected_tab)

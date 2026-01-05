@@ -1,6 +1,7 @@
 
 import ta
-from strategies.base import BaseStrategy, StrategyResult
+from app.strategies.base import BaseStrategy, StrategyResult
+
 
 class MaCrossoverStrategy(BaseStrategy):
     NAME = "MA_Crossover"

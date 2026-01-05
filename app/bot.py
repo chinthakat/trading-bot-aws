@@ -266,7 +266,7 @@ class TradingBot:
             
             # Use 'buy'/'sell' for Orders (vs 'long'/'short' for Positions)
             order_side = action.lower() 
-            self.position_manager.place_limit_order(symbol, order_side, price, amount, signal_id=signal_id)
+            self.position_manager.place_limit_order(symbol, order_side, price, amount, signal_id=signal_id, algo=algo)
             
         except Exception as e:
             logger.error(f"Execute Trade Error: {e}")
@@ -288,16 +288,49 @@ class TradingBot:
             try:
                 ohlcv = self.exchange.fetch_ohlcv(symbol, self.interval, limit=limit)
                 new_candles = []
+                
+                # Determine current open candle timestamp
+                current_time_ms = int(time.time() * 1000)
+                # Assuming 1m interval (60000ms) - Adjust logic if interval varies
+                # Simple heuristic: If last candle is very fresh, it's open. 
+                # Better: Use exchange-specifics, but Binance usually returns open candle last.
+                
                 for c in ohlcv:
-                    new_candles.append({'timestamp': c[0], 'open': float(c[1]), 'high': float(c[2]), 'low': float(c[3]), 'close': float(c[4]), 'volume': float(c[5]), 'symbol': symbol})
+                     candle_ts = c[0]
+                     # If candle start time + 60s > now, it is likely open/incomplete.
+                     # But safer to just sync: ProcessKline expects 'last_ts' to be the last PROCESSED (Closed) candle.
+                     # If we add it here, we mark it processed.
+                     # If we add an OPEN candle here, we mark it processed, ignoring the real close event later.
+                     
+                     # Filter: Only accept if (Timestamp + Interval) < Now?
+                     # Let's assume 1m = 60000ms.
+                     # Actually, simplest is to drop the very last candle if we suspect it's open, 
+                     # and let WS fill it when it closes.
+                     # But if we are 50s into the candle, we want the history up to T-1.
+                     
+                     new_candles.append({'timestamp': c[0], 'open': float(c[1]), 'high': float(c[2]), 'low': float(c[3]), 'close': float(c[4]), 'volume': float(c[5]), 'symbol': symbol})
+                
+                # POP the last candle if it's the current open one
+                # This ensures we wait for WS 'x=True' to properly close/process it with Strategy
+                if new_candles:
+                     last_c = new_candles[-1]
+                     # If last candle started within the last 60s (approx interval)
+                     if current_time_ms - last_c['timestamp'] < 60000: 
+                          new_candles.pop()
+                          logger.info(f"Dropped potential open candle from backfill: {last_c['timestamp']}")
+
                 self.candles[symbol].extend(new_candles)
                 
+                # Update last_ts to prevent duplicates, but based on what we KEPT
                 if new_candles:
-                    df = pd.DataFrame(self.candles[symbol])
-                    # Strategy calculates and Modifies DF (Enrichment)
-                    for name, strat in self.strategies.items(): strat.calculate(df)
-                    for idx, row in df.iterrows(): self.db.log_candle(row.to_dict())
-                    self.latest_prices[symbol] = new_candles[-1]['close']
+                     self.last_processed_kline_ts[symbol] = new_candles[-1]['timestamp']
+                
+                if new_candles:
+                     df = pd.DataFrame(self.candles[symbol])
+                     # Strategy calculates and Modifies DF (Enrichment)
+                     for name, strat in self.strategies.items(): strat.calculate(df)
+                     for idx, row in df.iterrows(): self.db.log_candle(row.to_dict())
+                     self.latest_prices[symbol] = new_candles[-1]['close']
             except Exception as e:
                 logger.error(f"Backfill error {symbol}: {e}")
 
