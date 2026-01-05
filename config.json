@@ -54,6 +54,7 @@
             "commission_rate": 0.001
         },
         "manual_trading_enabled": true,
-        "enable_position_flip": true
+        "enable_position_flip": true,
+        "dashboard_password": "Tharudi@2026"
     }
 }

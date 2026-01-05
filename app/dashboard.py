@@ -41,6 +41,12 @@ mode = config['trading'].get('mode', 'TEST')
 st.sidebar.header("Control Panel")
 if st.sidebar.button("Refresh"): st.rerun()
 
+# Logout Button
+if st.sidebar.button("Logout"):
+    for key in st.session_state.keys():
+        del st.session_state[key]
+    st.rerun()
+
 # Auto Refresh
 refresh_rate = st.sidebar.select_slider("Refresh Rate", options=[1, 5, 10, 30, 60], value=5)
 # time.sleep(refresh_rate) ... actually streamlit handles this differently or we rely on loop?
@@ -48,6 +54,43 @@ refresh_rate = st.sidebar.select_slider("Refresh Rate", options=[1, 5, 10, 30, 6
 if st.sidebar.checkbox("Auto Refresh"):
     # time.sleep(refresh_rate) # Removed as fragments handle their own refresh
     st.rerun() # Keep for full page refresh if needed for non-fragment content
+
+# --- Authentication ---
+def check_password():
+    """Returns `True` if the user had the correct password."""
+
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == config['trading'].get('dashboard_password', 'admin123'):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # First run, show input for password.
+        pst = st.text_input("Password", type="password", key="password_input")
+        if st.button("Login"):
+             st.session_state["password"] = pst
+             password_entered()
+             st.rerun()
+        return False
+        
+    elif not st.session_state["password_correct"]:
+        # Password check failed, let them try again.
+        pst = st.text_input("Password", type="password", key="password_input")
+        st.error("😕 Password incorrect")
+        if st.button("Login"):
+             st.session_state["password"] = pst
+             password_entered()
+             st.rerun()
+        return False
+    else:
+        # Password correct.
+        return True
+
+if not check_password():
+    st.stop()
 
 # --- Main Logic ---
 
