@@ -116,12 +116,26 @@ class PositionManager:
             logger.error(f"Failed to restore simulator state: {e}")
 
     def can_open_position(self, symbol: str) -> bool:
+        # 1. Check Local Active Position
         if self.current_position is not None:
-             logger.warning(f"Cannot open position for {symbol}: already have open position")
+             logger.warning(f"Cannot open position for {symbol}: already have open position (Local)")
              return False
-        if len(self.pending_orders) > 0:
-             logger.warning(f"Cannot open position for {symbol}: have pending orders")
+        
+        # 2. Check Simulator/DB State (Source of Truth)
+        if self.mode == "TEST":
+            if self.simulator.get_position(symbol):
+                logger.warning(f"Cannot open position for {symbol}: Simulator has open position (Desync prevented)")
+                # Self-heal
+                self.current_position = self.simulator.get_position(symbol)
+                return False
+                
+        # 3. Check Pending Entry Orders (Specific to symbol)
+        # Note: self.pending_orders is a dict of all orders. Filter by symbol.
+        pending_entries = [o for oid, o in self.pending_orders.items() if o.get('symbol') == symbol and o.get('type') == 'entry']
+        if len(pending_entries) > 0:
+             logger.warning(f"Cannot open position for {symbol}: has {len(pending_entries)} pending entry orders")
              return False
+             
         return True
 
     def calculate_position_size(self, symbol: str, price: float) -> float:
