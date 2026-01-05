@@ -140,16 +140,17 @@ class PaperTradingSimulator:
             self._persist_order(order)
 
         # 2. Update Balance & Positions
-        # 2. Update Balance & Positions
+        # 2. Update Balance (Futures/Margin Model: Collateral)
         cost = fill_price * amount
         commission = cost * self.commission_rate
         
         order['commission'] = commission
         
+        # Deduct commission immediately (simplification)
+        self.balance -= commission
+
         if side == 'buy':
-            self.balance -= (cost + commission)
-            
-            # Create/Update Position
+            # Create/Update Position (Long)
             if symbol in self.positions:
                 pos = self.positions[symbol]
                 if pos['side'] == 'long':
@@ -167,10 +168,10 @@ class PaperTradingSimulator:
                 else:
                     # Closing Short (Partial or Full)
                     remaining = pos['quantity'] - amount
-                    if remaining <= 1e-9: # Epsilon for float comparison
+                    if remaining <= 1e-9: # Epsilon
                         # Full Close
-                        # Gross PnL - Entry Comm - Exit Comm
-                        gross_pnl = (pos['entry_price'] - fill_price) * pos['quantity'] # Short PnL
+                        # PnL = Entry - Exit (Short)
+                        gross_pnl = (pos['entry_price'] - fill_price) * pos['quantity']
                         entry_comm = pos.get('entry_commission', 0.0)
                         net_pnl = gross_pnl - entry_comm - commission
                         
@@ -180,17 +181,24 @@ class PaperTradingSimulator:
                         pos['pnl'] = net_pnl
                         pos['exit_commission'] = commission
                         
+                        # Realize PnL to Balance
+                        self.balance += gross_pnl # Add Gross PnL (Comms already deducted)
+                        # Wait, we deducted entry comm on entry, and exit comm just now.
+                        # So Balance += Gross PnL. 
+                        # Balance was: Start - EntryComm - ExitComm.
+                        # Final = Start - EntryComm - ExitComm + GrossPnL = NetPnL + Start. Correct.
+                        
                         self.closed_positions.append(pos)
                         del self.positions[symbol]
                         
                         if self.db:
                              self.db.update_position_status(pos['position_id'], 'closed', mode='TEST')
-                             self.db.update_position_pnl(pos['position_id'], pnl, fill_price, mode='TEST')
+                             self.db.update_position_pnl(pos['position_id'], net_pnl, fill_price, mode='TEST')
                     else:
-                        # Partial Close
+                        # Partial Close (Not implementing PnL Realization for Partial yet for simplicity)
                         pos['quantity'] = remaining
                         if self.db:
-                            self.db.log_position(pos, mode='TEST') # Update qty
+                            self.db.log_position(pos, mode='TEST')
             else:
                 # New Long
                 new_pos = {
@@ -211,22 +219,23 @@ class PaperTradingSimulator:
                     self.db.log_position(new_pos, mode='TEST')
 
         elif side == 'sell':
-             self.balance += (cost - commission)
              # Check for Long to Close
              if symbol in self.positions and self.positions[symbol]['side'] == 'long':
                   # Close Long
                   pos = self.positions[symbol]
-                  # Gross PnL - Entry Comm - Exit Comm
+                  # PnL = Exit - Entry (Long)
                   gross_pnl = (fill_price - pos['entry_price']) * amount
                   entry_comm = pos.get('entry_commission', 0.0)
                   net_pnl = gross_pnl - entry_comm - commission
                   
-                  # Assume full close for MVP simplicity (or check qty)
                   pos['status'] = 'closed'
                   pos['exit_price'] = fill_price
                   pos['exit_time'] = datetime.now()
                   pos['pnl'] = net_pnl
                   pos['exit_commission'] = commission
+                  
+                  # Realize PnL
+                  self.balance += gross_pnl
                   
                   self.closed_positions.append(pos)
                   del self.positions[symbol]
