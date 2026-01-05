@@ -74,8 +74,11 @@ def render_positions_table(db, mode):
                 df['exit_time'] = pd.to_datetime(df['exit_time'], unit='ms')
             
             # Ensure critical columns exist
-            for c in ['exit_price', 'exit_time', 'pnl', 'stop_loss', 'take_profit']:
+            for c in ['exit_price', 'exit_time', 'pnl', 'stop_loss', 'take_profit', 'strategy_name']:
                  if c not in df.columns: df[c] = None
+            
+            # Default strategy name if missing/None
+            df['strategy_name'] = df['strategy_name'].fillna('manual')
             
             # Convert decimal/float cols
             numeric_cols = ['entry_price', 'exit_price', 'quantity', 'pnl', 'current_price', 'stop_loss', 'take_profit']
@@ -111,7 +114,7 @@ def render_positions_table(db, mode):
                 if 'take_profit' not in open_pos.columns: open_pos['take_profit'] = 0.0
                 
                 # Reorder
-                cols = ['Close', 'symbol', 'side', 'entry_price', 'current_price', 'quantity', 'pnl', 'fees', 'stop_loss', 'take_profit', 'entry_time']
+                cols = ['Close', 'symbol', 'strategy_name', 'side', 'entry_price', 'current_price', 'quantity', 'pnl', 'fees', 'stop_loss', 'take_profit', 'entry_time']
                 
                 # Check column existence (current_price/pnl might be missing if new)
                 cols = [c for c in cols if c in open_pos.columns or c == 'Close']
@@ -119,6 +122,7 @@ def render_positions_table(db, mode):
                 column_config = {
                     "Close": st.column_config.CheckboxColumn("Close?", help="Check to close position at market", default=False),
                     "symbol": st.column_config.TextColumn("Symbol"),
+                    "strategy_name": st.column_config.TextColumn("Strategy"),
                     "stop_loss": st.column_config.NumberColumn("Stop Loss", help="Edit to update"),
                     "take_profit": st.column_config.NumberColumn("Take Profit", help="Edit to update"),
                     "pnl": st.column_config.NumberColumn("PnL", format="$%.4f"),
@@ -135,7 +139,7 @@ def render_positions_table(db, mode):
                     open_pos[cols],
                     hide_index=True,
                     column_config=column_config,
-                    disabled=['symbol', 'side', 'entry_price', 'current_price', 'quantity', 'pnl', 'fees', 'entry_time', 'status'],
+                    disabled=['symbol', 'strategy_name', 'side', 'entry_price', 'current_price', 'quantity', 'pnl', 'fees', 'entry_time', 'status'],
                     key=f"positions_editor_{mode}"
                 )
                 
@@ -195,7 +199,11 @@ def render_positions_table(db, mode):
             # --- Closed Positions ---
             st.markdown("### 📜 Closed Positions")
             if not closed_pos.empty:
-                cols = ['symbol', 'side', 'entry_price', 'exit_price', 'quantity', 'pnl', 'fees', 'entry_time', 'exit_time']
+                cols = ['symbol', 'strategy_name', 'side', 'entry_price', 'exit_price', 'quantity', 'pnl', 'fees', 'entry_time', 'exit_time']
+                
+                # Ensure strategy_name exists
+                if 'strategy_name' not in closed_pos.columns: closed_pos['strategy_name'] = 'manual'
+                
                 if 'pnl' in closed_pos.columns:
                      st.dataframe(closed_pos[cols].style.applymap(
                         lambda v: 'color: green' if (isinstance(v, (int, float)) and v > 0) else 'color: red' if (isinstance(v, (int, float)) and v < 0) else '', 
@@ -248,7 +256,7 @@ def render_orders_table(db, mode):
             filtered['Cancel'] = False
             
             # Reorder columns: put 'Cancel' first for visibility
-            cols = ['Cancel', 'order_id', 'symbol', 'side', 'price', 'amount', 'status', 'created_at']
+            cols = ['Cancel', 'order_id', 'symbol', 'strategy_name', 'side', 'price', 'amount', 'status', 'created_at']
             if 'filled_at' in filtered.columns: cols.append('filled_at')
             
             # Define column config
@@ -258,6 +266,7 @@ def render_orders_table(db, mode):
                     help="Check to request cancellation",
                     default=False,
                 ),
+                "strategy_name": st.column_config.TextColumn("Strategy"),
                 "created_at": st.column_config.DatetimeColumn("Created", format="D MMM, HH:mm:ss"),
                 "filled_at": st.column_config.DatetimeColumn("Filled", format="D MMM, HH:mm:ss"),
                 "price": st.column_config.NumberColumn("Price"),
@@ -269,7 +278,7 @@ def render_orders_table(db, mode):
                 filtered[cols],
                 hide_index=True,
                 column_config=column_config,
-                disabled=['order_id', 'symbol', 'side', 'price', 'amount', 'status', 'created_at', 'filled_at'],
+                disabled=['order_id', 'symbol', 'strategy_name', 'side', 'price', 'amount', 'status', 'created_at', 'filled_at'],
                 key=f"orders_editor_{mode}"
             )
             
@@ -320,7 +329,10 @@ def render_signals_table(signals_table):
                 
             df = df.sort_values('timestamp', ascending=False)
             
-            st.dataframe(df[['timestamp', 'symbol', 'signal', 'algo', 'price']], use_container_width=True)
+            # Rename for display
+            display_df = df[['timestamp', 'symbol', 'signal', 'algo', 'price']].rename(columns={'algo': 'Strategy'})
+            
+            st.dataframe(display_df, use_container_width=True)
         else:
             st.info("No signals found")
     except Exception as e:

@@ -272,7 +272,10 @@ for i, strategy_name in enumerate(enabled_strategies):
                 
                 x.append(ts)
                 y.append(price)
-                hover.append(f"{type_label} {sig_type}<br>{price}")
+                
+                # Attribution
+                strat = item.get('algo') or item.get('strategy_name', 'manual')
+                hover.append(f"{type_label} {sig_type}<br>{price}<br>Strategy: {strat}")
             
             if x:
                 fig.add_trace(go.Scatter(
