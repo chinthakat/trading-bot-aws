@@ -4,6 +4,10 @@ from strategies.base import BaseStrategy, StrategyResult
 
 class MaCrossoverStrategy(BaseStrategy):
     NAME = "MA_Crossover"
+    PLOT_CONFIG = {
+        'indicators': ['sma_short', 'sma_long'],
+        'colors': ['#FFA500', '#00FFFF'] # Orange, Cyan
+    }
     
     def __init__(self, config):
         super().__init__(config)

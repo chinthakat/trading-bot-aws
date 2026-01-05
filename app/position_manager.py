@@ -209,7 +209,7 @@ class PositionManager:
     def _format_price(self, symbol, price):
         return float(self.exchange.price_to_precision(symbol, price))
 
-    def place_limit_order(self, symbol: str, side: str, current_price: float, amount: float, order_type: str = 'entry', signal_id: str = None) -> Optional[Dict]:
+    def place_limit_order(self, symbol: str, side: str, current_price: float, amount: float, order_type: str = 'entry', signal_id: str = None, strategy_name: str = 'manual') -> Optional[Dict]:
         """
         Unified Place Order.
         Calculates Limit Price (with small offset).
@@ -252,15 +252,20 @@ class PositionManager:
                 
                 # Enrich with metadata NOT stored in DB core schema but useful for local logic
                 order['type'] = order_type
+                order['strategy_name'] = strategy_name # Track Strategy
                 if sl_price: order['stop_loss'] = sl_price
                 if tp_price: order['take_profit'] = tp_price
                 if signal_id: order['signal_id'] = signal_id
                 
                 self.pending_orders[order['order_id']] = order
                 
+                # Re-Save Order with Strategy Name (since Simulator doesn't support it natively yet)
+                order['strategy_name'] = strategy_name
+                self.db.log_order(order, self.mode) 
+                
                 # Audit Log
                 safe_details = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in order.items()}
-                self.db.log_audit('ORDER_PLACED', cause=order_type, details=safe_details, mode=self.mode)
+                self.db.log_audit('ORDER_PLACED', cause=f"{order_type} ({strategy_name})", details=safe_details, mode=self.mode)
                 return order
                 
             else: # LIVE
@@ -285,7 +290,8 @@ class PositionManager:
                     'created_at': datetime.now(),
                     'expires_at': datetime.now() + timedelta(seconds=self.order_ttl_seconds),
                     'type': order_type,
-                    'signal_id': signal_id
+                    'signal_id': signal_id,
+                    'strategy_name': strategy_name
                 }
                 
                 if sl_price: order_data['stop_loss'] = sl_price
@@ -296,7 +302,7 @@ class PositionManager:
                 
                 # Audit Log Sanitize
                 safe_details = {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in order_data.items()}
-                self.db.log_audit('ORDER_PLACED', cause=order_type, details=safe_details, mode=self.mode)
+                self.db.log_audit('ORDER_PLACED', cause=f"{order_type} ({strategy_name})", details=safe_details, mode=self.mode)
                 
                 return order_data
                 
@@ -372,6 +378,7 @@ class PositionManager:
             'position_id': str(uuid.uuid4()),
             'symbol': order_data['symbol'],
             'side': 'long' if order_data['side'] == 'buy' else 'short',
+            'strategy_name': order_data.get('strategy_name', 'manual'),
             'entry_price': float(exchange_order['average']),
             'quantity': float(exchange_order['filled']),
             'entry_time': datetime.now(),
