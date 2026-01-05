@@ -220,12 +220,10 @@ def render_strategy_chart(strategy_name, symbol):
     else:
         st.warning("Waiting for Market Data...")
 
-def render_strategy_tab(strategy_name):
+def render_strategy_tab(strategy_name, symbol):
     st.header(f"Strategy: {strategy_name}")
     
-    # Selection (Outside Fragment to maintain state)
-    symbol = st.selectbox("Select Symbol", config['trading']['symbols'], key=f"sel_{strategy_name}")
-    
+    # Render Auto-Refreshing Content
     tab_chart, tab_details = st.tabs(["Live Chart", "Positions & Signals"])
     
     with tab_chart:
@@ -234,13 +232,25 @@ def render_strategy_tab(strategy_name):
     with tab_details:
         render_strategy_details(strategy_name, symbol)
 
-# --- Tabs ---
+# --- Sidebar Navigation ---
+st.sidebar.header("Navigation")
+
 # Get Active Strategies from Config
 strategies = [name for name, cfg in config['trading']['active_strategies'].items() if cfg['enabled']]
 tabs = ["Overview"] + strategies
-selected_tab = st.radio("View", tabs, horizontal=True)
+selected_tab = st.sidebar.radio("View", tabs)
 
+# Symbol Selection (Global for Strategy Views)
+symbol = None
+if selected_tab != "Overview":
+    st.sidebar.divider()
+    symbol = st.sidebar.selectbox("Select Symbol", config['trading']['symbols'], index=0)
+
+# --- Main Content ---
 if selected_tab == "Overview":
     render_overview()
 else:
-    render_strategy_tab(selected_tab)
+    if symbol:
+        render_strategy_tab(selected_tab, symbol)
+    else:
+        st.warning("Please select a symbol.")
