@@ -1,3 +1,10 @@
+"""Trading strategies and the registry used to look them up by name.
+
+To add a strategy, subclass BaseStrategy, implement calculate(), register the class
+in StrategyRegistry._strategies, and enable it under trading.active_strategies in
+config.json.
+"""
+
 import pandas as pd
 import ta
 import logging

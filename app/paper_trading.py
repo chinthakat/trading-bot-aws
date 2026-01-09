@@ -1,3 +1,10 @@
+"""Paper trading simulator used when trading.mode is TEST.
+
+Keeps a virtual cash balance and set of positions in memory and fills orders as soon
+as the live market price crosses their limit. Fills are optimistic: no fees, no
+slippage and no partial fills, so simulated results run ahead of real ones.
+"""
+
 import logging
 import uuid
 from datetime import datetime

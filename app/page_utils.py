@@ -1,3 +1,10 @@
+"""Shared Streamlit render helpers for the account pages.
+
+Each function draws one section (account summary, positions, orders, signals) against
+the tables for the given mode, so the Test Account and Live Account pages stay in sync.
+The positions and orders tables include inline controls that request a close or a
+cancel by writing a status back to DynamoDB for the bot to act on.
+"""
 
 import streamlit as st
 import time

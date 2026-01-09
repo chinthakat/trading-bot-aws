@@ -1,3 +1,14 @@
+"""Streamlit dashboard entry point.
+
+The landing page of the multipage app: edits strategy parameters in config.json,
+lists recent trades, and plots price history with the configured moving averages.
+The other views live in app/pages/.
+
+Run from the repository root:
+
+    streamlit run app/dashboard.py
+"""
+
 import streamlit as st
 import pandas as pd
 import json

@@ -1,3 +1,13 @@
+"""DynamoDB access layer.
+
+DynamoManager wraps every read and write the bot and the dashboard make. Table names
+come from aws.tables in config.json, and most methods take a mode argument ("TEST" or
+"LIVE") that selects between the paper-trading tables and the live ones.
+
+AWS credentials are resolved by boto3 in the usual order: environment variables,
+~/.aws/credentials, or the EC2 instance role.
+"""
+
 import boto3
 import time
 import uuid

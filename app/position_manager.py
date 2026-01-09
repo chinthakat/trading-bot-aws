@@ -1,3 +1,11 @@
+"""Position and order management with the bot's risk controls.
+
+PositionManager owns the rules that sit between a strategy signal and the exchange:
+at most one open position, limit orders only, orders expire after a TTL, and
+position sizing at the exchange minimum. It routes orders to PaperTradingSimulator
+in TEST mode and to ccxt in LIVE mode, and keeps DynamoDB in step with local state.
+"""
+
 import logging
 import time
 import uuid

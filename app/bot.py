@@ -1,3 +1,19 @@
+"""Trading bot entry point.
+
+Backfills recent candles over the ccxt REST API, subscribes to the Binance spot
+kline WebSocket, and runs the enabled strategies on each candle close. Signals are
+handed to PositionManager, which places limit orders against either the paper
+trading simulator (TEST mode) or the real exchange (LIVE mode).
+
+The main loop also polls DynamoDB every 10 seconds so that orders and close
+requests created by the Streamlit dashboard are picked up.
+
+Run from the repository root, which is where config.json and the log files are
+resolved from:
+
+    python app/bot.py
+"""
+
 import logging
 import ccxt
 import json
