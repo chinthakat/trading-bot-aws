@@ -100,10 +100,11 @@ def create_security_group():
 def launch_instance(sg_id):
     print("--- Launching EC2 Instance ---")
     
-    # AMI: Amazon Linux 2023 for us-east-1 (x86_64)
-    # Note: AMIs are region specific. This ID is for us-east-1 AL2023.
-    # We should ideally fetch it dynamically.
-    
+    # AMI: Amazon Linux 2023 (x86_64).
+    # AMI IDs are region specific, so rather than hardcoding one we look up the
+    # newest al2023 x86_64 image published by Amazon in whatever region
+    # config.json's aws.region points at.
+
     ami_response = ec2.describe_images(
         Owners=['amazon'],
         Filters=[

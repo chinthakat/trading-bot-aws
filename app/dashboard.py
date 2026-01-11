@@ -1,8 +1,11 @@
 """Streamlit dashboard entry point.
 
 The landing page of the multipage app: edits strategy parameters in config.json,
-lists recent trades, and plots price history with the configured moving averages.
-The other views live in app/pages/.
+lists recent trades, and is meant to plot price history with the configured moving
+averages. The chart does not currently work: it expects a 'price' field on the rows
+from get_price_history(), but the prices table is only ever written by log_candle(),
+which stores open/high/low/close/volume instead, so "Load Graph" always fails with
+KeyError: 'price'. The other views live in app/pages/.
 
 Run from the repository root:
 

@@ -11,7 +11,7 @@ def load_config():
         return json.load(f)
 
 config = load_config()
-REGION = config['aws']['region'] # Currently us-east-1
+REGION = config['aws']['region'] # Currently ap-southeast-2
 TABLES = config['aws']['tables']
 
 ec2 = boto3.client('ec2', region_name=REGION)

@@ -10,6 +10,22 @@ EC2, but it is not production-hardened: there is exactly one strategy, the dashb
 authentication, dependencies are unpinned, and 2 of the 3 unit tests currently fail. See
 [Known issues](#known-issues) before running it with real money.
 
+## Security notice: the committed Binance keys are compromised
+
+A real Binance API key and secret were committed to `.env.template` in the very first commit
+(`6f1af55`) of this repository. That file is still present, with the live values, at the tip of
+every branch published on GitHub — `main`, `feature/algo_optimisations`,
+`feature/position-management` and `refactor/shared-memory` — and the repository is public.
+
+**Revoke and reissue that key pair in the Binance API management console before doing anything
+else with this repository, and before pointing anyone at it.**
+
+The working tree is clean: `.env.template` has been replaced by `.env.example`, which contains
+placeholders only, and `.env` is gitignored. That does not help. Deleting a file does not remove
+it from git history, the history here has deliberately **not** been rewritten, and even a rewrite
+would be too late — the commits have already been published and may have been cloned, forked or
+cached. Rotating the credentials at Binance is the only remediation that actually works.
+
 ---
 
 ## How it works
@@ -25,11 +41,24 @@ limit orders only, orders expire after a TTL) and then routes the order either t
 paper simulator or to the real exchange, depending on `trading.mode` in `config.json`. Its main
 loop wakes every 10 seconds to sync state, check fills, expire stale orders and update P&L.
 
-**The dashboard** (`app/dashboard.py` plus `app/pages/`) is a Streamlit multipage app. It is
-read-only over DynamoDB for most views, but it also acts as a manual trading control: pressing
-buy/sell writes a row with `status: pending` into the orders table, and the bot picks it up on
-its next `sync_state()` pass. Closing a position works the same way — the dashboard flips the
-position's status to `request_close` and the bot acts on it.
+**The dashboard** (`app/dashboard.py` plus `app/pages/`) is a Streamlit multipage app. Most of
+its views are read-only over DynamoDB, but it is also a manual trading control — and its two
+kinds of control work very differently:
+
+- *Manual buy/sell places the order itself.* The buttons in `app/pages/live_chart.py` build
+  their own ccxt client from `BINANCE_API_KEY` / `BINANCE_SECRET`, construct their own
+  `PositionManager`, and call `place_limit_order()` directly. In `TEST` mode that hits the
+  in-process paper simulator and then writes a `status: pending` row to the test orders table,
+  which the bot imports on its next `sync_state()` pass. In `LIVE` mode it goes to
+  `exchange.create_limit_order()` — the real order leaves the Streamlit process for Binance,
+  and the DynamoDB row is only written afterwards by `log_order()`. The bot is not in the loop.
+- *Close and cancel go through the database.* The account pages write `request_close` on a
+  position or `request_cancel` on an order, and the bot acts on those in `sync_state()`.
+
+The first point is the one that matters for exposure: the dashboard has no authentication and
+`deployment/provision.py` opens its port to `0.0.0.0/0` (see [Known issues](#known-issues)).
+In `LIVE` mode whoever reaches it has authenticated access to the exchange, not merely the
+ability to queue a row that the bot may later act on.
 
 ```mermaid
 flowchart TD
@@ -45,7 +74,8 @@ flowchart TD
     PM --> DB
 
     DASH["Streamlit dashboard<br/>app/dashboard.py + app/pages/"] --> DB
-    DASH -. "writes a pending order row" .-> DB
+    DASH -- "manual buy/sell in LIVE mode:<br/>own ccxt client, own PositionManager,<br/>order sent straight to the exchange" --> BREST
+    DASH -. "close / cancel requests,<br/>pending order rows in TEST mode" .-> DB
     DB -. "read by sync_state every ~10s" .-> PM
 ```
 
@@ -56,7 +86,7 @@ are used:
 
 | Mode | Orders | Tables | Balance |
 |---|---|---|---|
-| `TEST` | Simulated by `PaperTradingSimulator`. An order fills as soon as the live price crosses its limit. | `TradingBot_Test_*` | Virtual, seeded from `trading.test_initial_balance` |
+| `TEST` | Simulated by `PaperTradingSimulator`. An order fills as soon as the live price crosses its limit. | `TradingBot_Test_*` | Virtual, and hardcoded to 10,000 — `trading.test_initial_balance` does not reach the simulator, see [config.json](#configjson) |
 | `LIVE` | Real `create_limit_order` calls through ccxt | `TradingBot_Positions` / `TradingBot_Orders` | Your actual Binance balance |
 
 Market data comes from Binance **mainnet** in both modes — `TEST` only simulates the fills, it
@@ -109,7 +139,12 @@ see [docs/deployment.md](docs/deployment.md) if you only want the tables):
 python deployment/provision.py            # core tables + security group + EC2 instance
 python deployment/create_position_tables.py
 python deployment/create_test_tables.py
+python deployment/attach_iam.py           # instance role + profile, attached to the instance
 ```
+
+`attach_iam.py` is not optional if you are running on EC2: it is what gives the instance
+DynamoDB access without static AWS keys on the box. Skip it and the bot starts but every
+DynamoDB call fails.
 
 ## Usage
 
@@ -160,12 +195,12 @@ Read directly from the environment (loaded from `.env` by `python-dotenv`). See 
 | Key | Default in repo | Meaning |
 |---|---|---|
 | `aws.region` | `ap-southeast-2` | Region for DynamoDB and EC2 |
-| `aws.tables.*` | `TradingBot_*` | DynamoDB table names. `prices`, `signals`, `positions`, `orders` and the `test_*` tables are actively used. `trades` is only ever read, `stats` is connected but never touched, and `logs` is read nowhere at all |
+| `aws.tables.*` | `TradingBot_*` | DynamoDB table names. `prices`, `signals`, `positions`, `orders`, `test_positions` and `test_orders` are actively used. `trades` is only ever read. `stats` and `test_account` are wired up in `DynamoManager.__init__` and then never read or written. `logs` is read nowhere at all |
 | `exchange.id` | `binance` | ccxt exchange id |
 | `exchange.testnet` | `false` | Puts ccxt in sandbox mode. Note: the WebSocket URL is hardcoded to mainnet regardless (see [Known issues](#known-issues)) |
 | `exchange.options` | spot, time-adjust | Passed straight to the ccxt constructor |
 | `trading.mode` | `TEST` | `TEST` for simulated fills, `LIVE` for real orders |
-| `trading.test_initial_balance` | `10000.0` | Starting paper balance in `TEST` mode |
+| `trading.test_initial_balance` | `10000.0` | **Not read by the simulator.** `app/bot.py:setup_position_manager()` passes only `trading.risk_management` into `PositionManager`, which then looks the key up inside that sub-dict (`app/position_manager.py:41`), misses, and falls back to a hardcoded `10000.0`. The only code that reads the real key is the dashboard's account summary (`app/page_utils.py:26`), so editing it changes the displayed balance but not the simulated one |
 | `trading.symbols` | `["BTC/USDT"]` | Symbols to stream and trade |
 | `trading.base_currency` | `USDT` | Quote currency; read but not used for sizing |
 | `trading.risk_per_trade` | `10.0` | Read into the bot but not currently applied — sizing uses the exchange minimum |
@@ -188,7 +223,8 @@ app/                      The bot and the dashboard
   position_manager.py     Risk rules, order placement, fill tracking, DB sync
   paper_trading.py        Virtual balance and fill simulation for TEST mode
   persistence.py          DynamoManager: every DynamoDB read and write
-  dashboard.py            Streamlit entry point: strategy config, trades, price chart
+  dashboard.py            Streamlit entry point: strategy config, recent trades, price chart
+                          (the chart on this page is broken — see Known issues)
   page_utils.py           Shared render helpers for the account pages
   pages/                  Streamlit multipage views
     live_chart.py         Candle chart with signal markers and manual trade controls
@@ -231,6 +267,8 @@ The fixtures need fixing, not the strategy. There is no CI configured.
 
 Found by reading the code; none of them have been fixed here.
 
+- **A live Binance key and secret are in the published history** and must be rotated — see
+  [Security notice](#security-notice-the-committed-binance-keys-are-compromised).
 - **`app/bot.py` defines `on_error` twice.** The second definition wins, and it appends to the
   hardcoded absolute path `/home/ec2-user/trading-bot/ws_debug.log`. Any WebSocket error on a
   machine that is not the EC2 host raises inside the error handler.
@@ -245,6 +283,13 @@ Found by reading the code; none of them have been fixed here.
 - **Nothing ever writes to the trades table.** `DynamoManager.log_trade()` exists but is not
   called from anywhere, so the dashboard's "Recent Trades" panel is always empty. Executed
   trades are only visible as positions and orders on the account pages.
+- **The main dashboard page's price chart never renders.** "Load Graph" reads `df['price']`
+  from the rows returned by `get_price_history()`, but the only writer of the prices table is
+  `DynamoManager.log_candle()`, which stores `open`/`high`/`low`/`close`/`volume` and no `price`
+  key. (`log_price()` does write one, but — like `log_trade()` — nothing calls it.) So the
+  lookup always raises `KeyError` into the surrounding `except` and the page shows
+  `Error loading graph: 'price'`. The candlestick chart on the Live Chart page reads the OHLC
+  columns and works.
 - **The main dashboard page's "Total PnL" is hardcoded to `$0.00`.** Real P&L lives on the
   Test Account and Live Account pages, which compute it from the positions tables.
 - **Dependencies are unpinned**, so a fresh install may not reproduce a working environment.

@@ -31,8 +31,11 @@ If the key pair `TradingBotKey_AU` does not already exist, the script creates it
 private key to `TradingBotKey_AU.pem` in the repository root. That file is gitignored — back it
 up somewhere safe, because AWS will not give it to you again.
 
-> The security group allows SSH and the dashboard from `0.0.0.0/0`. The dashboard has no login
-> and can place trades. Narrow the CIDRs to your own IP before leaving anything running.
+> The security group allows SSH and the dashboard from `0.0.0.0/0`. The dashboard has no login,
+> and in `LIVE` mode its manual buy/sell buttons build their own ccxt client from the `.env`
+> credentials and send orders straight to Binance. Anyone who finds the public IP has
+> authenticated access to the exchange account. Narrow the CIDRs to your own IP before leaving
+> anything running.
 
 ### 2. Create the position and paper-trading tables
 
@@ -42,6 +45,9 @@ up somewhere safe, because AWS will not give it to you again.
 python deployment/create_position_tables.py   # TradingBot_Positions, TradingBot_Orders
 python deployment/create_test_tables.py       # TradingBot_Test_Positions, _Test_Orders, _Test_Account
 ```
+
+`TradingBot_Test_Account` is created for completeness only — `DynamoManager` opens a handle to
+it and no code ever reads or writes it. Nothing breaks if you skip it.
 
 ### 3. Attach the instance role
 
@@ -101,6 +107,9 @@ This kills any running `bot.py` and relaunches it under `nohup`, logging to
    | `TradingBot_Test_Positions` | `position_id` (S) | — |
    | `TradingBot_Test_Orders` | `order_id` (S) | — |
    | `TradingBot_Test_Account` | `account_id` (S) | `timestamp` (N) |
+
+   `TradingBot_Test_Account` is unused by the application code; create it only if you want the
+   table set to match `config.json` exactly.
 
 3. **Upload the code**
 
