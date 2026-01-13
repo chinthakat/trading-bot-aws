@@ -10,24 +10,6 @@ EC2, but it is not production-hardened: there is exactly one strategy, the dashb
 authentication, dependencies are unpinned, and 2 of the 3 unit tests currently fail. See
 [Known issues](#known-issues) before running it with real money.
 
-## Security notice: the committed Binance keys are compromised
-
-A real Binance API key and secret were committed to `.env.template` in the very first commit
-(`6f1af55`) of this repository. That file is still present, with the live values, at the tip of
-every branch published on GitHub — `main`, `feature/algo_optimisations`,
-`feature/position-management` and `refactor/shared-memory` — and the repository is public.
-
-**Revoke and reissue that key pair in the Binance API management console before doing anything
-else with this repository, and before pointing anyone at it.**
-
-The working tree is clean: `.env.template` has been replaced by `.env.example`, which contains
-placeholders only, and `.env` is gitignored. That does not help. Deleting a file does not remove
-it from git history, the history here has deliberately **not** been rewritten, and even a rewrite
-would be too late — the commits have already been published and may have been cloned, forked or
-cached. Rotating the credentials at Binance is the only remediation that actually works.
-
----
-
 ## How it works
 
 The system is two long-running processes on one EC2 instance that talk to each other only
@@ -265,36 +247,23 @@ The fixtures need fixing, not the strategy. There is no CI configured.
 
 ## Known issues
 
-Found by reading the code; none of them have been fixed here.
-
-- **A live Binance key and secret are in the published history** and must be rotated — see
-  [Security notice](#security-notice-the-committed-binance-keys-are-compromised).
-- **`app/bot.py` defines `on_error` twice.** The second definition wins, and it appends to the
-  hardcoded absolute path `/home/ec2-user/trading-bot/ws_debug.log`. Any WebSocket error on a
-  machine that is not the EC2 host raises inside the error handler.
-- **`exchange.testnet` does not reach the WebSocket.** `setup_exchange()` computes a testnet
-  stream URL, but `start_websocket()` hardcodes `wss://stream.binance.com:9443`, so market data
-  is always mainnet.
-- **`DynamoManager.update_order()` always writes to the live orders table**, unlike its
-  siblings which take a `mode` argument. `scripts/verify_full_lifecycle.py` was written to
-  investigate exactly this.
-- **The dashboard has no authentication**, and `deployment/provision.py` opens ports 22 and 8501
-  to `0.0.0.0/0`. Anyone who finds the instance's public IP can place manual trades on it.
-- **Nothing ever writes to the trades table.** `DynamoManager.log_trade()` exists but is not
-  called from anywhere, so the dashboard's "Recent Trades" panel is always empty. Executed
-  trades are only visible as positions and orders on the account pages.
-- **The main dashboard page's price chart never renders.** "Load Graph" reads `df['price']`
-  from the rows returned by `get_price_history()`, but the only writer of the prices table is
-  `DynamoManager.log_candle()`, which stores `open`/`high`/`low`/`close`/`volume` and no `price`
-  key. (`log_price()` does write one, but — like `log_trade()` — nothing calls it.) So the
-  lookup always raises `KeyError` into the surrounding `except` and the page shows
-  `Error loading graph: 'price'`. The candlestick chart on the Live Chart page reads the OHLC
-  columns and works.
-- **The main dashboard page's "Total PnL" is hardcoded to `$0.00`.** Real P&L lives on the
-  Test Account and Live Account pages, which compute it from the positions tables.
-- **Dependencies are unpinned**, so a fresh install may not reproduce a working environment.
+- `app/bot.py` defines `on_error` twice. The second wins and appends to the hardcoded path
+  `/home/ec2-user/trading-bot/ws_debug.log`, so any WebSocket error off that host raises inside
+  the error handler.
+- `exchange.testnet` never reaches the WebSocket. `start_websocket()` hardcodes
+  `wss://stream.binance.com:9443`, so market data is always mainnet.
+- `DynamoManager.update_order()` always writes to the live orders table, unlike its siblings
+  which take a `mode` argument.
+- The dashboard has no authentication, and `deployment/provision.py` opens ports 22 and 8501 to
+  `0.0.0.0/0`.
+- Nothing calls `DynamoManager.log_trade()`, so the dashboard's "Recent Trades" panel is always
+  empty. Executed trades appear only as positions and orders.
+- The main page's price chart never renders - `get_price_history()` rows carry no `price` key,
+  so the lookup raises `KeyError`. The Live Chart page's candlestick chart works.
+- "Total PnL" on the main page is hardcoded to `$0.00`; real P&L is on the account pages.
+- Dependencies are unpinned, so a fresh install may not reproduce a working environment.
 - `deployment/provision.py` writes the generated EC2 private key to the repository root as
-  `TradingBotKey_AU.pem`. It is covered by `.gitignore`, but keep it out of the repo.
+  `TradingBotKey_AU.pem`. It is gitignored, but keep it out of the repo.
 
 ## Risk and disclaimer
 
